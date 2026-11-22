@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+
+    <color name="nexus_bg">#0A0A0C</color>
+    <color name="nexus_bg_end">#0D1511</color>
+    <color name="nexus_green">#00FF66</color>
+    <color name="nexus_green_soft">#2200FF66</color>
+    <color name="nexus_cyan">#4DD0E1</color>
+    <color name="nexus_amber">#FFB020</color>
+    <color name="nexus_red">#FF4D4D</color>
+    <color name="nexus_red_header">#CCB3262D</color>
+    <color name="nexus_green_header">#3300FF66</color>
+
+    <color name="glass_fill">#14FFFFFF</color>
+    <color name="glass_stroke">#2EFFFFFF</color>
+    <color name="terminal_fill">#F2101014</color>
+
+    <color name="text_primary">#F2F2F5</color>
+    <color name="text_secondary">#8C8C96</color>
+</resources>
