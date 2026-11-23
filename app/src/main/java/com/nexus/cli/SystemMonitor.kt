@@ -121,6 +121,8 @@ class SystemMonitor(private val context: Context) {
 
     // ---------- CPU ----------
 
+    fun getCpuUsage(): Float = readCpu()
+
     private fun readCpu(): Float =
         readProcStat() ?: readFreqRatio() ?: readProcessCpu()
 

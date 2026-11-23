@@ -1,5 +1,7 @@
 package com.nexus.cli
 
+import android.graphics.Bitmap
+
 enum class LineType { INPUT, OUTPUT, ERROR, SYSTEM }
 
 data class TerminalLine(
@@ -52,6 +54,21 @@ object QuickTiles {
     )
 }
 
+/** Widget yang bisa dipasang di halaman Quick Launch (urutan = urutan tampil). */
+object QuickWidgets {
+    val all: LinkedHashMap<String, String> = linkedMapOf(
+        "clock_big" to "Jam Besar",
+        "calendar" to "Kalender",
+        "weather" to "Cuaca",
+        "music_player" to "Pemutar Musik",
+        "cpu_chart" to "Grafik CPU",
+        "terminal_mini" to "Terminal Mini",
+        "light_sensor" to "Sensor Cahaya"
+    )
+
+    val default: Set<String> = setOf("clock_big", "music_player")
+}
+
 data class MediaState(
     val title: String = "Tidak ada media",
     val artist: String = "—",
@@ -62,7 +79,8 @@ data class MediaState(
     val updatedAtMs: Long = 0L,
     val speed: Float = 1f,
     val hasAccess: Boolean = false,
-    val hasSession: Boolean = false
+    val hasSession: Boolean = false,
+    val albumArt: Bitmap? = null
 )
 
 data class DayForecast(
@@ -102,7 +120,10 @@ data class UiState(
     val nowMillis: Long = System.currentTimeMillis(),
     val sessionRunning: Boolean = false,
     val sessionElapsedMs: Long = 0L,
-    val sessionTotalTodayMs: Long = 0L
+    val sessionTotalTodayMs: Long = 0L,
+    val widgets: Set<String> = QuickWidgets.default,
+    val lightLux: Float? = null,
+    val lastTerminalLine: String = ""
 )
 
 interface PageActions {
@@ -111,4 +132,5 @@ interface PageActions {
     fun onMediaPlayPause()
     fun onMediaNext()
     fun onMediaCardClick()
+    fun onQuickLaunchLongPress()
 }

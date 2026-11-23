@@ -1,29 +1,39 @@
 package com.nexus.cli
 
+import android.Manifest
 import android.app.ActivityManager
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
-import android.content.pm.ActivityInfo
+import android.content.IntentFilter
+import android.content.SharedPreferences
+import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.media.AudioManager
+import android.os.Build
 import android.os.Bundle
-import android.provider.AlarmClock
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.Settings
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.widget.LinearLayout
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.viewpager2.widget.ViewPager2
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.nexus.cli.databinding.ActivityMainBinding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -35,116 +45,254 @@ import java.time.format.DateTimeFormatter
 class MainActivity : AppCompatActivity(), PageActions {
 
     private lateinit var binding: ActivityMainBinding
-    private lateinit var pagerAdapter: NexusPagerAdapter
-    private lateinit var terminalAdapter: TerminalAdapter
-    private lateinit var shell: ShellEngine
+    private lateinit var prefs: SharedPreferences
+
     private lateinit var fs: VirtualFS
     private lateinit var apps: AppRepository
+    private lateinit var weather: WeatherRepository
     private lateinit var monitor: SystemMonitor
+    private lateinit var shell: ShellEngine
+    private lateinit var pagerAdapter: NexusPagerAdapter
+    private val terminalAdapter = TerminalAdapter()
 
-    private val weatherRepo = WeatherRepository()
-    private val dots = mutableListOf<View>()
+    private val clockFmt = DateTimeFormatter.ofPattern("HH:mm")
 
-    private var bannerShown = false
-    private var lastWeather: WeatherInfo? = null
+    // Kustomisasi Quick Launch
+    private var widgets: Set<String> = QuickWidgets.default
+    private var widgetSheet: WidgetCustomizeSheet? = null
 
-    private val terminalOpen: Boolean
-        get() = binding.terminalPanel.visibility == View.VISIBLE
+    // Cek launcher default (sekali per proses)
+    private var launcherPromptShown = false
 
-    // ---------- lifecycle ----------
+    // Sensor cahaya (hanya aktif jika widget "light_sensor" dipilih)
+    private val sensorManager by lazy { getSystemService(Context.SENSOR_SERVICE) as SensorManager }
+    private var lightLastUpdate = 0L
+    private val lightListener = object : SensorEventListener {
+        override fun onSensorChanged(event: SensorEvent) {
+            val now = SystemClock.elapsedRealtime()
+            if (now - lightLastUpdate < 500L) return
+            lightLastUpdate = now
+            pagerAdapter.setLightLux(event.values[0])
+        }
+
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+    }
+
+    // ---------- Voice receiver ----------
+
+    private val voiceReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                VoiceForegroundService.ACTION_MIC_OFF -> {
+                    setMicState(false)
+                    appendText("[voice] mikrofon dimatikan (idle timeout / dihentikan).", LineType.SYSTEM)
+                }
+                VoiceForegroundService.ACTION_VOICE_HEARD -> {
+                    val text = intent.getStringExtra(VoiceForegroundService.EXTRA_TEXT).orEmpty()
+                    val isFinal = intent.getBooleanExtra(VoiceForegroundService.EXTRA_FINAL, false)
+                    appendText(if (isFinal) "[voice] \"$text\"" else "[voice~] $text", LineType.SYSTEM)
+                }
+                VoiceForegroundService.ACTION_VOICE_COMMAND -> {
+                    val cmd = intent.getStringExtra(VoiceForegroundService.EXTRA_COMMAND).orEmpty()
+                    if (cmd.isNotBlank()) {
+                        openTerminal(showKeyboard = false)
+                        runCommand(cmd)
+                    }
+                }
+            }
+        }
+    }
+
+    private val permissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            if (hasMicPermission()) {
+                startVoiceService()
+                setMicState(true)
+                appendText("[voice] mikrofon aktif. Ucapkan \"Hey Nexus, <perintah>\".", LineType.SYSTEM)
+            } else {
+                setMicState(false)
+                appendText("[voice] izin RECORD_AUDIO ditolak.", LineType.ERROR)
+            }
+        }
+
+    // ---------- Lifecycle ----------
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // Paksa landscape lewat kode (selain sensorLandscape di manifest)
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        fs = VirtualFS(applicationContext)
-        apps = AppRepository(applicationContext) { releaseKioskForLaunch() }
-        monitor = SystemMonitor(applicationContext)
-        shell = ShellEngine(ShellContext(applicationContext, fs, apps, weatherRepo, monitor))
+        prefs = getSharedPreferences(VoiceForegroundService.PREFS_NAME, Context.MODE_PRIVATE)
+        MediaRepository.attach(this)
+
+        fs = VirtualFS(this)
+        apps = AppRepository(this) { releaseKiosk() }
+        weather = WeatherRepository()
+        monitor = SystemMonitor(this)
+        shell = ShellEngine(
+            context = this,
+            registry = CommandRegistry(),
+            shellContext = ShellContext(applicationContext, fs, apps, weather, monitor),
+            cpuProvider = { monitor.getCpuUsage() }
+        )
 
         setupPager()
         setupTerminal()
+        setupMic()
         setupBackHandler()
-        startLoops()
-    }
 
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        // Tombol Home ditekan saat NEXUS-CLI sudah jadi launcher utama
-        if (intent.hasCategory(Intent.CATEGORY_HOME)) {
-            if (terminalOpen) closeTerminal()
-            binding.viewPager.setCurrentItem(0, true)
-        }
+        startClockLoop()
+        startMetricsLoop()
+        startWeatherLoop()
+        startMediaCollector()
     }
 
     override fun onResume() {
         super.onResume()
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-        hideSystemBars()
         MediaRepository.refresh(this)
+        refreshMicIcon()
+        syncLightSensor()
+        promptDefaultLauncherIfNeeded()
     }
 
-    override fun onWindowFocusChanged(hasFocus: Boolean) {
-        super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) hideSystemBars()
+    override fun onPause() {
+        sensorManager.unregisterListener(lightListener)
+        super.onPause()
     }
 
-    // ---------- pager ----------
+    override fun onDestroy() {
+        NexusBus.terminalPrinter = null
+        NexusBus.terminalClearer = null
+        NexusBus.micToggle = null
+        NexusBus.matrixStart = null
+        NexusBus.matrixStop = null
+        binding.matrixRain.stopMatrixRain()
+        widgetSheet?.dismiss()
+        try {
+            unregisterReceiver(voiceReceiver)
+        } catch (_: IllegalArgumentException) {
+        }
+        shell.close()
+        super.onDestroy()
+    }
+
+    // ---------- Launcher default (pengganti paksaan LockTask) ----------
+
+    @Suppress("DEPRECATION")
+    private fun isDefaultLauncher(): Boolean {
+        val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        val info = packageManager.resolveActivity(home, PackageManager.MATCH_DEFAULT_ONLY)
+        return info?.activityInfo?.packageName == packageName
+    }
+
+    private fun promptDefaultLauncherIfNeeded() {
+        if (launcherPromptShown || isDefaultLauncher()) return
+        launcherPromptShown = true
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Set as Default Launcher")
+            .setMessage("NEXUS-CLI belum menjadi launcher default. Buka pengaturan sekarang?")
+            .setPositiveButton("Buka Pengaturan") { _, _ -> openHomeSettings() }
+            .setNegativeButton("Nanti", null)
+            .show()
+    }
+
+    private fun openHomeSettings() {
+        val ok = apps.start(Intent(Settings.ACTION_HOME_SETTINGS)) ||
+                apps.start(Intent(Settings.ACTION_SETTINGS))
+        if (!ok) toast("Pengaturan launcher tidak bisa dibuka")
+    }
+
+    // ---------- Pager ----------
 
     private fun setupPager() {
         pagerAdapter = NexusPagerAdapter(this)
-        binding.viewPager.apply {
-            adapter = pagerAdapter
-            offscreenPageLimit = 3
-            registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
-                override fun onPageSelected(position: Int) {
-                    updateDots(position)
-                }
-            })
-        }
-        buildDots()
-        updateDots(0)
+        binding.viewPager.adapter = pagerAdapter
+        binding.viewPager.offscreenPageLimit = 3
+        buildPageIndicator(pagerAdapter.itemCount)
+        binding.viewPager.registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
+            override fun onPageSelected(position: Int) {
+                updateIndicator(position)
+            }
+        })
+
+        widgets = loadWidgets()
+        pagerAdapter.setWidgets(widgets)
     }
 
-    private fun buildDots() {
+    private fun buildPageIndicator(count: Int) {
+        val d = resources.displayMetrics.density
         binding.pageIndicator.removeAllViews()
-        dots.clear()
-        for (i in 0 until PAGE_COUNT) {
+        repeat(count) {
             val dot = View(this).apply {
-                background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_dot)
-                layoutParams = LinearLayout.LayoutParams(dp(8), dp(8)).apply {
-                    setMargins(dp(5), 0, dp(5), 0)
+                setBackgroundResource(R.drawable.bg_dot)
+                layoutParams = LinearLayout.LayoutParams((6 * d).toInt(), (6 * d).toInt()).apply {
+                    marginStart = (4 * d).toInt()
+                    marginEnd = (4 * d).toInt()
                 }
+                alpha = 0.3f
             }
             binding.pageIndicator.addView(dot)
-            dots.add(dot)
+        }
+        updateIndicator(0)
+    }
+
+    private fun updateIndicator(selected: Int) {
+        for (i in 0 until binding.pageIndicator.childCount) {
+            binding.pageIndicator.getChildAt(i).alpha = if (i == selected) 1f else 0.3f
         }
     }
 
-    private fun updateDots(selected: Int) {
-        dots.forEachIndexed { i, dot ->
-            dot.alpha = if (i == selected) 1f else 0.3f
-            dot.scaleX = if (i == selected) 1.4f else 1f
-            dot.scaleY = if (i == selected) 1.4f else 1f
+    // ---------- Kustomisasi widget Quick Launch ----------
+
+    private fun loadWidgets(): Set<String> =
+        prefs.getStringSet(KEY_WIDGETS, null)?.toSet() ?: QuickWidgets.default
+
+    override fun onQuickLaunchLongPress() {
+        if (widgetSheet?.isShowing == true) return
+        widgetSheet = WidgetCustomizeSheet(this, widgets) { chosen ->
+            widgets = chosen
+            prefs.edit().putStringSet(KEY_WIDGETS, HashSet(chosen)).apply()
+            pagerAdapter.setWidgets(chosen)
+            syncLightSensor()
+        }.also { it.show() }
+    }
+
+    private fun syncLightSensor() {
+        sensorManager.unregisterListener(lightListener)
+        if ("light_sensor" !in widgets) return
+        val sensor = sensorManager.getDefaultSensor(Sensor.TYPE_LIGHT)
+        if (sensor == null) {
+            pagerAdapter.setLightLux(null)
+        } else {
+            sensorManager.registerListener(lightListener, sensor, SensorManager.SENSOR_DELAY_NORMAL)
         }
     }
 
-    // ---------- terminal ----------
+    // ---------- Terminal ----------
 
     private fun setupTerminal() {
-        terminalAdapter = TerminalAdapter()
-        binding.terminalRecycler.apply {
-            layoutManager = LinearLayoutManager(this@MainActivity).apply { stackFromEnd = true }
-            adapter = terminalAdapter
-            itemAnimator = null
-        }
+        binding.terminalRecycler.layoutManager = LinearLayoutManager(this)
+        binding.terminalRecycler.adapter = terminalAdapter
+        binding.terminalRecycler.itemAnimator = null
 
-        binding.btnOpenTerminal.setOnClickListener { openTerminal() }
+        NexusBus.terminalPrinter = { text -> runOnUiThread { appendText(text) } }
+        NexusBus.terminalClearer = { runOnUiThread { terminalAdapter.clear() } }
+        NexusBus.matrixStart = {
+            runOnUiThread {
+                openTerminal(showKeyboard = false)
+                binding.matrixRain.startMatrixRain()
+            }
+        }
+        NexusBus.matrixStop = { runOnUiThread { binding.matrixRain.stopMatrixRain() } }
+
+        appendLines(
+            listOf(
+                TerminalLine("NEXUS-CLI v2.0 — ketik 'help' untuk daftar perintah.", LineType.SYSTEM)
+            )
+        )
+        binding.terminalPrompt.text = fs.prompt()
+
+        binding.btnOpenTerminal.setOnClickListener { openTerminal(showKeyboard = true) }
         binding.btnCloseTerminal.setOnClickListener { closeTerminal() }
 
         binding.terminalInput.setOnEditorActionListener { _, actionId, event ->
@@ -161,247 +309,288 @@ class MainActivity : AppCompatActivity(), PageActions {
                 false
             }
         }
-        updatePrompt()
     }
 
-    private fun openTerminal() {
+    private fun openTerminal(showKeyboard: Boolean) {
         binding.terminalPanel.visibility = View.VISIBLE
-        if (!bannerShown) {
-            bannerShown = true
-            val lines = mutableListOf(
-                TerminalLine("NEXUS-CLI v2.0 — Terminal-first launcher", LineType.SYSTEM),
-                TerminalLine("Ketik 'help' untuk daftar perintah.", LineType.SYSTEM)
-            )
-            if (!MediaRepository.isAccessGranted(this)) {
-                lines.add(
-                    TerminalLine(
-                        "Izin notifikasi belum aktif: ketuk kartu Media di Halaman 1 untuk membuka pengaturan.",
-                        LineType.SYSTEM
-                    )
-                )
-            }
-            terminalAdapter.add(lines)
-            scrollTerminal()
+        if (showKeyboard) {
+            binding.terminalInput.requestFocus()
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+            imm.showSoftInput(binding.terminalInput, InputMethodManager.SHOW_IMPLICIT)
         }
-        binding.terminalInput.requestFocus()
-        WindowCompat.getInsetsController(window, binding.terminalInput).show(WindowInsetsCompat.Type.ime())
     }
 
     private fun closeTerminal() {
-        WindowCompat.getInsetsController(window, binding.terminalInput).hide(WindowInsetsCompat.Type.ime())
+        binding.matrixRain.stopMatrixRain()
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.hideSoftInputFromWindow(binding.terminalInput.windowToken, 0)
+        binding.terminalInput.clearFocus()
         binding.terminalPanel.visibility = View.GONE
-        hideSystemBars()
     }
 
     private fun submitInput() {
-        val text = binding.terminalInput.text.toString()
+        val text = binding.terminalInput.text.toString().trim()
         binding.terminalInput.setText("")
+        if (text.isEmpty()) return
         runCommand(text)
     }
 
-    private fun runCommand(raw: String) {
-        val input = raw.trim()
-        if (input.isEmpty()) return
-
-        terminalAdapter.add(listOf(TerminalLine("${fs.prompt()}$input", LineType.INPUT)))
-        scrollTerminal()
-
+    /** Dipakai input terminal dan perintah suara (non-media). */
+    private fun runCommand(line: String) {
+        appendLines(listOf(TerminalLine(fs.prompt() + line, LineType.INPUT)))
         lifecycleScope.launch {
-            val result = shell.execute(input)
+            val result = try {
+                shell.execute(line)
+            } catch (e: Exception) {
+                ShellResult.error("shell: ${e.message ?: e.javaClass.simpleName}")
+            }
             if (result.clear) terminalAdapter.clear()
-            terminalAdapter.add(result.lines)
-            updatePrompt()
-            scrollTerminal()
+            appendLines(result.lines)
+            binding.terminalPrompt.text = fs.prompt()
             if (result.exit) exitNexus()
         }
     }
 
-    private fun updatePrompt() {
-        binding.terminalPrompt.text = fs.prompt()
+    private fun appendLines(lines: List<TerminalLine>) {
+        if (lines.isEmpty()) return
+        terminalAdapter.add(lines)
+        binding.terminalRecycler.scrollToPosition(terminalAdapter.itemCount - 1)
+        pagerAdapter.setLastTerminalLine(lines.last().text)
     }
 
-    private fun scrollTerminal() {
-        val last = terminalAdapter.itemCount - 1
-        if (last >= 0) binding.terminalRecycler.scrollToPosition(last)
-    }
-
-    private fun addSystemLine(text: String) {
-        terminalAdapter.add(listOf(TerminalLine(text, LineType.SYSTEM)))
+    private fun appendText(text: String, type: LineType = LineType.OUTPUT) {
+        appendLines(text.split("\n").map { TerminalLine(it, type) })
     }
 
     private fun setupBackHandler() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (terminalOpen) {
-                    closeTerminal()
-                } else if (binding.viewPager.currentItem != 0) {
-                    binding.viewPager.currentItem = 0
+                when {
+                    binding.terminalPanel.visibility == View.VISIBLE -> closeTerminal()
+                    binding.viewPager.currentItem != 0 -> binding.viewPager.currentItem = 0
                 }
-                // Launcher: di halaman 1 tombol back diabaikan.
             }
         })
     }
 
-    // ---------- system bars & kiosk ----------
+    // ---------- Kiosk (hanya dilepas, tidak lagi dipaksa saat start) ----------
 
-    private fun hideSystemBars() {
-        val controller = WindowCompat.getInsetsController(window, binding.root)
-        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        controller.hide(WindowInsetsCompat.Type.systemBars())
+    private fun lockTaskState(): Int {
+        val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        return am.lockTaskModeState
     }
 
-    /** Lock Task (screen pinning) tidak lagi aktif otomatis; ini hanya melepasnya jika sedang aktif. */
-    private fun releaseKioskForLaunch() {
-        val am = getSystemService(ActivityManager::class.java)
-        if (am.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE) {
-            try {
-                stopLockTask()
-            } catch (e: Exception) {
-                // abaikan
-            }
+    private fun releaseKiosk() {
+        try {
+            if (lockTaskState() != ActivityManager.LOCK_TASK_MODE_NONE) stopLockTask()
+        } catch (_: Exception) {
         }
     }
 
     private fun exitNexus() {
-        try {
-            stopLockTask()
-        } catch (e: Exception) {
-            // abaikan
-        }
-        finishAndRemoveTask()
+        releaseKiosk()
+        finishAffinity()
     }
 
-    // ---------- loops: monitor, media, cuaca ----------
+    // ---------- Status bar loops ----------
 
-    private fun startLoops() {
+    private fun startClockLoop() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (true) {
+                    binding.statusClock.text = LocalTime.now().format(clockFmt)
+                    pagerAdapter.tick()
+                    delay(1000)
+                }
+            }
+        }
+    }
+
+    private fun startMetricsLoop() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 while (true) {
                     val snap = withContext(Dispatchers.Default) { monitor.sample() }
                     pagerAdapter.pushMetrics(snap)
-                    pagerAdapter.tick()
-                    updateStatusBar(snap)
-                    delay(1000L)
+
+                    binding.statusNetwork.text = "NET ${snap.netLabel}"
+                    binding.statusBattery.text = if (snap.batteryPct >= 0) {
+                        "BAT ${snap.batteryPct}%${if (snap.charging) "+" else ""}"
+                    } else {
+                        "BAT --"
+                    }
+                    val low = snap.batteryPct in 0..19 && !snap.charging
+                    binding.statusBattery.setTextColor(
+                        ContextCompat.getColor(this@MainActivity, if (low) R.color.nexus_red else R.color.nexus_green)
+                    )
+                    delay(1500)
                 }
             }
         }
+    }
 
+    private fun startWeatherLoop() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (true) {
+                    val w = weather.fetch().getOrNull()
+                    if (w != null) {
+                        pagerAdapter.setWeather(w, null)
+                    } else {
+                        pagerAdapter.setWeather(null, "Cuaca tidak tersedia (offline?)")
+                    }
+                    delay(if (w != null) 30 * 60 * 1000L else 60_000L)
+                }
+            }
+        }
+    }
+
+    private fun startMediaCollector() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 MediaRepository.state.collect { pagerAdapter.setMedia(it) }
             }
         }
-
-        lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.STARTED) {
-                while (true) {
-                    loadWeather()
-                    delay(WEATHER_REFRESH_MS)
-                }
-            }
-        }
-    }
-
-    private suspend fun loadWeather() {
-        weatherRepo.fetch().fold(
-            onSuccess = {
-                lastWeather = it
-                pagerAdapter.setWeather(it, null)
-            },
-            onFailure = {
-                val cached = lastWeather
-                pagerAdapter.setWeather(cached, if (cached == null) "Cuaca gagal dimuat (offline?)" else null)
-            }
-        )
-    }
-
-    private fun updateStatusBar(s: MetricsSnapshot) {
-        binding.statusClock.text = LocalTime.now().format(TIME_FMT)
-        binding.statusNetwork.text = "NET ${s.netLabel}"
-
-        val batteryText = if (s.batteryPct >= 0) {
-            "BAT ${s.batteryPct}%" + (if (s.charging) " CHG" else "")
-        } else {
-            "BAT --"
-        }
-        binding.statusBattery.text = batteryText
-
-        val low = s.batteryPct in 0..15 && !s.charging
-        binding.statusBattery.setTextColor(
-            ContextCompat.getColor(this, if (low) R.color.nexus_red else R.color.nexus_green)
-        )
     }
 
     // ---------- PageActions ----------
 
     override fun onTileClick(tile: QuickTile) {
         when (tile.id) {
-            "terminal" -> openTerminal()
-            "vscode" -> {
-                val ok = apps.launchFirstInstalled("com.microsoft.vscode") ||
-                        apps.openUrl("https://vscode.dev")
-                toastIfFailed(ok, "VS Code")
+            "terminal" -> openTerminal(showKeyboard = true)
+            "vscode" -> launchApp("VS Code", "com.microsoft.vscode", fallbackUrl = "https://vscode.dev")
+            "browser" -> launchApp(
+                "Browser", "com.android.chrome", "org.mozilla.firefox", "com.brave.browser",
+                "com.sec.android.app.sbrowser", fallbackUrl = "https://www.google.com"
+            )
+            "files" -> launchApp(
+                "Files", "com.google.android.apps.nbu.files", "com.sec.android.app.myfiles",
+                "com.android.documentsui", "com.mi.android.globalFileexplorer"
+            )
+            "spotify" -> launchApp("Spotify", "com.spotify.music")
+            "discord" -> launchApp("Discord", "com.discord")
+            "ytmusic" -> launchApp("YT Music", "com.google.android.apps.youtube.music")
+            "camera" -> {
+                val ok = apps.launchFirstInstalled(
+                    "com.google.android.GoogleCamera", "com.sec.android.app.camera",
+                    "com.android.camera2", "com.android.camera"
+                ) || apps.start(Intent(MediaStore.ACTION_IMAGE_CAPTURE))
+                if (!ok) toast("Camera tidak ditemukan")
             }
-            "browser" -> toastIfFailed(apps.openUrl("https://www.google.com"), "Browser")
-            "files" -> toastIfFailed(
-                apps.launchFirstInstalled(
-                    "com.google.android.apps.nbu.files",
-                    "com.google.android.documentsui",
-                    "com.android.documentsui",
-                    "com.sec.android.app.myfiles"
-                ),
-                "Files"
+            "calc" -> launchApp(
+                "Calculator", "com.google.android.calculator", "com.sec.android.app.popupcalculator",
+                "com.android.calculator2"
             )
-            "spotify" -> toastIfFailed(apps.launchPackage("com.spotify.music"), "Spotify")
-            "discord" -> toastIfFailed(apps.launchPackage("com.discord"), "Discord")
-            "ytmusic" -> toastIfFailed(
-                apps.launchPackage("com.google.android.apps.youtube.music"),
-                "YouTube Music"
+            "clock" -> launchApp(
+                "Clock", "com.google.android.deskclock", "com.sec.android.app.clockpackage",
+                "com.android.deskclock"
             )
-            "camera" -> toastIfFailed(
-                apps.start(Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)),
-                "Camera"
-            )
-            "calc" -> toastIfFailed(
-                apps.start(Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_CALCULATOR)),
-                "Calculator"
-            )
-            "clock" -> toastIfFailed(apps.start(Intent(AlarmClock.ACTION_SHOW_ALARMS)), "Clock")
             "mute" -> {
-                val audio = getSystemService(AudioManager::class.java)
+                val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
                 audio.adjustStreamVolume(
                     AudioManager.STREAM_MUSIC,
                     AudioManager.ADJUST_TOGGLE_MUTE,
                     AudioManager.FLAG_SHOW_UI
                 )
             }
-            "settings" -> toastIfFailed(apps.start(Intent(Settings.ACTION_SETTINGS)), "Settings")
+            "settings" -> if (!apps.start(Intent(Settings.ACTION_SETTINGS))) toast("Settings tidak bisa dibuka")
         }
     }
 
     override fun onMediaPrev() = MediaRepository.previous()
 
-    override fun onMediaPlayPause() = MediaRepository.playPause()
+    /**
+     * Tombol Play: jika sedang main -> pause. Jika tidak -> buka aplikasi musik yang paling sering
+     * dibuka + kirim Media Button Play. TIDAK memindahkan halaman ViewPager.
+     */
+    override fun onMediaPlayPause() = MediaRepository.onPlayPressed { pkg -> apps.launchPackage(pkg) }
 
     override fun onMediaNext() = MediaRepository.next()
 
     override fun onMediaCardClick() {
-        if (!MediaRepository.isAccessGranted(this)) {
-            apps.start(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+        if (!MediaRepository.state.value.hasAccess) {
+            if (!apps.start(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))) {
+                toast("Tidak bisa membuka pengaturan akses notifikasi")
+            }
         }
     }
 
-    // ---------- util ----------
-
-    private fun toastIfFailed(ok: Boolean, name: String) {
-        if (!ok) Toast.makeText(this, "$name tidak tersedia", Toast.LENGTH_SHORT).show()
+    private fun launchApp(label: String, vararg packages: String, fallbackUrl: String? = null) {
+        val ok = apps.launchFirstInstalled(*packages) || (fallbackUrl != null && apps.openUrl(fallbackUrl))
+        if (!ok) toast("$label tidak ditemukan")
     }
 
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+    private fun toast(message: String) {
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+    }
+
+    // ---------- Mic ----------
+
+    private fun setupMic() {
+        NexusBus.micToggle = { enable -> setMic(enable) }
+
+        val filter = IntentFilter().apply {
+            addAction(VoiceForegroundService.ACTION_MIC_OFF)
+            addAction(VoiceForegroundService.ACTION_VOICE_HEARD)
+            addAction(VoiceForegroundService.ACTION_VOICE_COMMAND)
+        }
+        ContextCompat.registerReceiver(this, voiceReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+
+        binding.btnMicToggle.setOnClickListener {
+            setMic(!prefs.getBoolean(VoiceForegroundService.KEY_MIC_ENABLED, false))
+        }
+
+        // Fallback boot: jika mic terakhir menyala, hidupkan lagi saat launcher terbuka.
+        if (prefs.getBoolean(VoiceForegroundService.KEY_MIC_ENABLED, false) && hasMicPermission()) {
+            startVoiceService()
+        }
+        refreshMicIcon()
+    }
+
+    private fun setMic(enable: Boolean) {
+        if (enable) {
+            if (hasMicPermission()) {
+                startVoiceService()
+                setMicState(true)
+                appendText("[voice] mikrofon aktif. Ucapkan \"Hey Nexus, <perintah>\".", LineType.SYSTEM)
+            } else {
+                val perms = mutableListOf(Manifest.permission.RECORD_AUDIO)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    perms.add(Manifest.permission.POST_NOTIFICATIONS)
+                }
+                permissionLauncher.launch(perms.toTypedArray())
+            }
+        } else {
+            stopService(Intent(this, VoiceForegroundService::class.java))
+            setMicState(false)
+            appendText("[voice] mikrofon nonaktif.", LineType.SYSTEM)
+        }
+    }
+
+    private fun startVoiceService() {
+        try {
+            ContextCompat.startForegroundService(this, Intent(this, VoiceForegroundService::class.java))
+        } catch (e: Exception) {
+            setMicState(false)
+            appendText("[voice] gagal menjalankan service: ${e.message}", LineType.ERROR)
+        }
+    }
+
+    private fun hasMicPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+
+    private fun setMicState(enabled: Boolean) {
+        prefs.edit().putBoolean(VoiceForegroundService.KEY_MIC_ENABLED, enabled).apply()
+        refreshMicIcon()
+    }
+
+    private fun refreshMicIcon() {
+        val on = prefs.getBoolean(VoiceForegroundService.KEY_MIC_ENABLED, false)
+        binding.btnMicToggle.setImageResource(if (on) R.drawable.ic_mic_on else R.drawable.ic_mic_off)
+    }
 
     private companion object {
-        const val PAGE_COUNT = 4
-        const val WEATHER_REFRESH_MS = 15 * 60 * 1000L
-        val TIME_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+        const val KEY_WIDGETS = "quick_widgets"
     }
 }

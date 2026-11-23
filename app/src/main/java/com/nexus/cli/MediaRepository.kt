@@ -2,6 +2,8 @@ package com.nexus.cli
 
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.media.AudioManager
 import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
@@ -9,24 +11,48 @@ import android.media.session.PlaybackState
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.view.KeyEvent
 import androidx.core.app.NotificationManagerCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 /** Singleton pengikat NotificationListenerService <-> UI. Semua dipanggil dari main thread. */
 object MediaRepository {
+
+    /** Prefix key SharedPreferences untuk hitungan "app paling sering dibuka" (ditulis AppRepository). */
+    const val LAUNCH_COUNT_PREFIX = "launch_count_"
 
     private val _state = MutableStateFlow(MediaState())
     val state: StateFlow<MediaState> = _state.asStateFlow()
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var appContext: Context? = null
     private var controller: MediaController? = null
     private var hasAccess = false
 
     private val knownPackages = setOf(
         "com.spotify.music",
         "com.google.android.apps.youtube.music"
+    )
+
+    /** Urutan = prioritas saat hitungan launch seri. */
+    private val knownMusicApps = listOf(
+        "com.spotify.music",
+        "com.google.android.apps.youtube.music",
+        "com.apple.android.music",
+        "deezer.android.app",
+        "com.amazon.mp3",
+        "com.soundcloud.android",
+        "com.aspiro.tidal",
+        "com.samsung.android.app.musicplayer",
+        "com.miui.player"
     )
 
     private val callback = object : MediaController.Callback() {
@@ -44,6 +70,10 @@ object MediaRepository {
         }
     }
 
+    fun attach(context: Context) {
+        appContext = context.applicationContext
+    }
+
     fun isAccessGranted(context: Context): Boolean =
         NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName)
 
@@ -54,6 +84,7 @@ object MediaRepository {
 
     /** Dipanggil dari Activity (onResume) untuk sinkronisasi ulang. */
     fun refresh(context: Context) {
+        attach(context)
         hasAccess = isAccessGranted(context)
         if (hasAccess) {
             try {
@@ -96,10 +127,14 @@ object MediaRepository {
         controller = null
     }
 
-    // ---------- kontrol ----------
+    // ---------- kontrol (fallback ke Media Button jika belum ada session) ----------
 
     fun playPause() {
-        val c = controller ?: return
+        val c = controller
+        if (c == null) {
+            sendKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
+            return
+        }
         if (c.playbackState?.state == PlaybackState.STATE_PLAYING) {
             c.transportControls.pause()
         } else {
@@ -107,12 +142,75 @@ object MediaRepository {
         }
     }
 
+    fun play() {
+        val c = controller
+        if (c != null) c.transportControls.play() else sendKey(KeyEvent.KEYCODE_MEDIA_PLAY)
+    }
+
+    fun pause() {
+        val c = controller
+        if (c != null) c.transportControls.pause() else sendKey(KeyEvent.KEYCODE_MEDIA_PAUSE)
+    }
+
     fun next() {
-        controller?.transportControls?.skipToNext()
+        val c = controller
+        if (c != null) c.transportControls.skipToNext() else sendKey(KeyEvent.KEYCODE_MEDIA_NEXT)
     }
 
     fun previous() {
-        controller?.transportControls?.skipToPrevious()
+        val c = controller
+        if (c != null) c.transportControls.skipToPrevious() else sendKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS)
+    }
+
+    fun isMusicActive(): Boolean {
+        val ctx = appContext ?: return false
+        return (ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager).isMusicActive
+    }
+
+    /** Kirim Media Button (down + up) lewat AudioManager.dispatchMediaKeyEvent. */
+    fun sendKey(keyCode: Int) {
+        val ctx = appContext ?: return
+        val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val now = SystemClock.uptimeMillis()
+        am.dispatchMediaKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0))
+        am.dispatchMediaKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0))
+    }
+
+    /**
+     * Tombol Play di UI.
+     * - Sedang main  -> pause.
+     * - Tidak main   -> buka aplikasi musik yang paling sering dibuka ([launch]), lalu kirim Media Button Play.
+     * Tidak menyentuh ViewPager.
+     */
+    fun onPlayPressed(launch: (String) -> Boolean) {
+        val ctx = appContext ?: return
+        if (_state.value.isPlaying) {
+            pause()
+            return
+        }
+        val pkg = mostUsedMusicPackage(ctx)
+        if (pkg != null) launch(pkg)
+        scope.launch {
+            delay(1200L)
+            sendKey(KeyEvent.KEYCODE_MEDIA_PLAY)
+            delay(1800L)
+            if (!isMusicActive()) sendKey(KeyEvent.KEYCODE_MEDIA_PLAY)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun mostUsedMusicPackage(ctx: Context): String? {
+        val pm = ctx.packageManager
+        val prefs = ctx.getSharedPreferences(VoiceForegroundService.PREFS_NAME, Context.MODE_PRIVATE)
+
+        val installedKnown = knownMusicApps.filter { pm.getLaunchIntentForPackage(it) != null }
+        val viaCategory = pm.queryIntentActivities(
+            Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_MUSIC), 0
+        ).map { it.activityInfo.packageName }.filter { it != ctx.packageName }
+
+        // maxByOrNull memilih elemen pertama saat seri -> Spotify jadi default.
+        return (installedKnown + viaCategory).distinct()
+            .maxByOrNull { prefs.getInt(LAUNCH_COUNT_PREFIX + it, 0) }
     }
 
     // ---------- state ----------
@@ -138,7 +236,10 @@ object MediaRepository {
             updatedAtMs = ps?.lastPositionUpdateTime ?: SystemClock.elapsedRealtime(),
             speed = ps?.playbackSpeed ?: 1f,
             hasAccess = hasAccess,
-            hasSession = true
+            hasSession = true,
+            albumArt = md?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
+                ?: md?.getBitmap(MediaMetadata.METADATA_KEY_ART)
+                ?: md?.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
         )
     }
 

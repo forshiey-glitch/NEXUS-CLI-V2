@@ -156,6 +156,25 @@ class VirtualFS(context: Context) {
         return null
     }
 
+    /** Menulis file virtual. Membuat file baru jika belum ada. */
+    fun write(path: String, content: String, append: Boolean = false) {
+        val segs = resolve(path)
+        if (segs.isEmpty()) return
+        val fileName = segs.last()
+        val dirSegs = segs.dropLast(1)
+        val dirNode = nodeAt(dirSegs) ?: return
+        if (!dirNode.isDir) return
+
+        val existing = dirNode.children.firstOrNull { it.name == fileName }
+        if (existing != null) {
+            if (existing.isDir) return
+            existing.content = if (append) existing.content + content else content
+        } else {
+            dirNode.children.add(FsNode(fileName, isDir = false, content = content))
+        }
+        save()
+    }
+
     // ---------- aliases ----------
 
     fun aliasOf(name: String): String? = state.aliases[name]

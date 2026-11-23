@@ -1,12 +1,24 @@
 package com.nexus.cli
 
+import android.animation.ObjectAnimator
+import android.annotation.SuppressLint
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Typeface
 import android.os.SystemClock
+import android.text.TextUtils
+import android.view.Gravity
 import android.view.LayoutInflater
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.LinearInterpolator
 import android.widget.GridLayout
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.card.MaterialCardView
 import com.nexus.cli.databinding.ItemForecastDayBinding
 import com.nexus.cli.databinding.ItemQuickTileBinding
 import com.nexus.cli.databinding.PageMediaClockBinding
@@ -20,6 +32,20 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.max
 import kotlin.math.roundToInt
+
+/** Animasi tombol: mengecil ke 0.9 saat ditekan lalu kembali 1.0 (100ms, ViewPropertyAnimator). */
+@SuppressLint("ClickableViewAccessibility")
+private fun View.attachPressAnim() {
+    setOnTouchListener { v, e ->
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN ->
+                v.animate().scaleX(0.9f).scaleY(0.9f).setDuration(100L).start()
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                v.animate().scaleX(1f).scaleY(1f).setDuration(100L).start()
+        }
+        false
+    }
+}
 
 /** SATU-SATUNYA adapter untuk ViewPager2 (4 halaman). */
 class NexusPagerAdapter(private val actions: PageActions) :
@@ -60,6 +86,7 @@ class NexusPagerAdapter(private val actions: PageActions) :
 
     override fun onViewRecycled(holder: PageHolder) {
         holders.remove(holder)
+        (holder as? MediaClockHolder)?.release()
         super.onViewRecycled(holder)
     }
 
@@ -75,10 +102,26 @@ class NexusPagerAdapter(private val actions: PageActions) :
         renderAll()
     }
 
+    fun setWidgets(widgets: Set<String>) {
+        state = state.copy(widgets = widgets)
+        renderAll()
+    }
+
+    fun setLightLux(lux: Float?) {
+        state = state.copy(lightLux = lux)
+        renderAll()
+    }
+
+    fun setLastTerminalLine(line: String) {
+        state = state.copy(lastTerminalLine = line)
+        renderAll()
+    }
+
     /** Tambah titik sparkline + simpan snapshot. Teks dirender oleh [tick]. */
     fun pushMetrics(snapshot: MetricsSnapshot) {
         state = state.copy(metrics = snapshot)
         holders.filterIsInstance<MetricsHolder>().forEach { it.pushSparks(snapshot) }
+        holders.filterIsInstance<QuickLaunchHolder>().forEach { it.pushCpu(snapshot.cpuPct) }
     }
 
     /** Dipanggil tiap detik: jam, progress lagu, timer sesi. */
@@ -126,12 +169,38 @@ class NexusPagerAdapter(private val actions: PageActions) :
     inner class MediaClockHolder(private val b: PageMediaClockBinding) : PageHolder(b.root) {
 
         private var shownWeather: WeatherInfo? = null
+        private var shownArt: Bitmap? = null
+
+        // Hanya piringan yang berputar; albumArt tetap diam di tengah.
+        private val vinylAnimator: ObjectAnimator =
+            ObjectAnimator.ofFloat(b.vinylDisc, View.ROTATION, 0f, 360f).apply {
+                duration = 6000L
+                interpolator = LinearInterpolator()
+                repeatCount = ObjectAnimator.INFINITE
+            }
 
         init {
             b.btnPrev.setOnClickListener { actions.onMediaPrev() }
             b.btnPlayPause.setOnClickListener { actions.onMediaPlayPause() }
             b.btnNext.setOnClickListener { actions.onMediaNext() }
             b.mediaCard.setOnClickListener { actions.onMediaCardClick() }
+
+            b.btnPrev.attachPressAnim()
+            b.btnPlayPause.attachPressAnim()
+            b.btnNext.attachPressAnim()
+        }
+
+        fun release() {
+            vinylAnimator.cancel()
+        }
+
+        private fun spin(on: Boolean) {
+            if (on) {
+                if (!vinylAnimator.isStarted) vinylAnimator.start()
+                else if (vinylAnimator.isPaused) vinylAnimator.resume()
+            } else if (vinylAnimator.isRunning) {
+                vinylAnimator.pause()
+            }
         }
 
         override fun render(state: UiState) {
@@ -150,9 +219,16 @@ class NexusPagerAdapter(private val actions: PageActions) :
             }
             b.btnPlayPause.setImageResource(if (m.isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
 
+            if (m.albumArt !== shownArt) {
+                shownArt = m.albumArt
+                if (m.albumArt != null) b.albumArt.setImageBitmap(m.albumArt)
+                else b.albumArt.setImageResource(R.drawable.ic_album_default)
+            }
+            spin(m.isPlaying)
+
             val pos = estimatedPosition(m)
-            b.mediaProgress.progress =
-                if (m.durationMs > 0) (pos * 1000 / m.durationMs).toInt().coerceIn(0, 1000) else 0
+            val target = if (m.durationMs > 0) (pos * 1000 / m.durationMs).toInt().coerceIn(0, 1000) else 0
+            b.mediaProgress.setProgressCompat(target, true) // transisi halus
             b.mediaTime.text = "${fmtMs(pos)} / ${fmtMs(m.durationMs)}"
 
             val dt = LocalDateTime.ofInstant(Instant.ofEpochMilli(state.nowMillis), ZoneId.systemDefault())
@@ -188,9 +264,13 @@ class NexusPagerAdapter(private val actions: PageActions) :
         }
     }
 
-    // ---------- Halaman 2: Quick Launch 4x3 ----------
+    // ---------- Halaman 2: Quick Launch 4x3 + widget ----------
 
     inner class QuickLaunchHolder(private val b: PageQuickLaunchBinding) : PageHolder(b.root) {
+
+        private var shownWidgets: Set<String>? = null
+        private val updaters = ArrayList<(UiState) -> Unit>()
+        private var cpuSpark: SparklineView? = null
 
         init {
             val inflater = LayoutInflater.from(b.root.context)
@@ -212,10 +292,152 @@ class NexusPagerAdapter(private val actions: PageActions) :
                 }
                 b.quickGrid.addView(tb.root, lp)
             }
+
+            // Tekan lama 300ms di mana pun di halaman -> BottomSheet "Kustomisasi Widget".
+            b.root.longPressMs = 300L
+            b.root.onLongPress = { actions.onQuickLaunchLongPress() }
+        }
+
+        fun pushCpu(value: Float) {
+            cpuSpark?.addValue(value)
         }
 
         override fun render(state: UiState) {
-            // statis
+            if (state.widgets != shownWidgets) {
+                shownWidgets = state.widgets
+                rebuildWidgets(state.widgets)
+            }
+            updaters.forEach { it(state) }
+        }
+
+        private fun rebuildWidgets(selected: Set<String>) {
+            val ctx = b.root.context
+            updaters.clear()
+            cpuSpark = null
+            b.widgetContainer.removeAllViews()
+
+            val keys = QuickWidgets.all.keys.filter { it in selected }
+            b.widgetContainer.visibility = if (keys.isEmpty()) View.GONE else View.VISIBLE
+
+            val margin = dp(ctx, 4)
+            keys.forEach { key ->
+                val lp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
+                    .apply { setMargins(margin, margin, margin, margin) }
+                b.widgetContainer.addView(buildWidget(ctx, key), lp)
+            }
+        }
+
+        private fun buildWidget(ctx: Context, key: String): View {
+            val green = ContextCompat.getColor(ctx, R.color.nexus_green)
+            val white = ContextCompat.getColor(ctx, R.color.text_primary)
+            val gray = ContextCompat.getColor(ctx, R.color.text_secondary)
+
+            val card = MaterialCardView(ctx).apply {
+                radius = dp(ctx, 16).toFloat()
+                cardElevation = 0f
+                setCardBackgroundColor(ContextCompat.getColor(ctx, R.color.glass_fill))
+                strokeColor = ContextCompat.getColor(ctx, R.color.glass_stroke)
+                strokeWidth = dp(ctx, 1)
+            }
+            val inner = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(dp(ctx, 8), dp(ctx, 6), dp(ctx, 8), dp(ctx, 6))
+            }
+            card.addView(
+                inner,
+                ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            )
+
+            fun tv(sp: Float, color: Int, bold: Boolean = false) = TextView(ctx).apply {
+                textSize = sp
+                setTextColor(color)
+                typeface = Typeface.create(Typeface.MONOSPACE, if (bold) Typeface.BOLD else Typeface.NORMAL)
+                gravity = Gravity.CENTER
+                maxLines = 2
+                ellipsize = TextUtils.TruncateAt.END
+            }
+
+            fun label(t: String) = tv(9f, gray).apply {
+                text = t
+                letterSpacing = 0.15f
+            }
+
+            when (key) {
+                "clock_big" -> {
+                    val t = tv(30f, white, true)
+                    inner.addView(label("JAM"))
+                    inner.addView(t)
+                    updaters += { s -> t.text = fmtTime(s.nowMillis, HM_FMT) }
+                }
+                "calendar" -> {
+                    val day = tv(13f, green, true)
+                    val date = tv(12f, white)
+                    inner.addView(label("KALENDER"))
+                    inner.addView(day)
+                    inner.addView(date)
+                    updaters += { s ->
+                        day.text = fmtTime(s.nowMillis, DAY_FMT)
+                        date.text = fmtTime(s.nowMillis, SHORT_DATE_FMT)
+                    }
+                }
+                "weather" -> {
+                    val t = tv(13f, white)
+                    inner.addView(label("CUACA"))
+                    inner.addView(t)
+                    updaters += { s ->
+                        val w = s.weather
+                        t.text = if (w != null) "${w.tempC}°C\n${w.condition}" else "—"
+                    }
+                }
+                "music_player" -> {
+                    val title = tv(12f, white, true)
+                    val artist = tv(10f, gray)
+                    inner.addView(label("MUSIK"))
+                    inner.addView(title)
+                    inner.addView(artist)
+                    card.isClickable = true
+                    card.setOnClickListener { actions.onMediaPlayPause() }
+                    updaters += { s ->
+                        val m = s.media
+                        title.text = if (m.hasSession) m.title else "Tidak ada media"
+                        artist.text = if (m.hasSession) {
+                            "${if (m.isPlaying) "▶" else "⏸"} ${m.artist}"
+                        } else {
+                            "Ketuk untuk putar"
+                        }
+                    }
+                }
+                "cpu_chart" -> {
+                    inner.addView(label("CPU"))
+                    val spark = SparklineView(ctx).apply {
+                        maxPoints = 30
+                        fixedMax = 100f
+                        lineColor = green
+                    }
+                    cpuSpark = spark
+                    inner.addView(spark, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+                }
+                "terminal_mini" -> {
+                    val t = tv(11f, green)
+                    inner.addView(label("TERMINAL"))
+                    inner.addView(t)
+                    card.isClickable = true
+                    card.setOnClickListener {
+                        actions.onTileClick(QuickTiles.all.first { it.id == "terminal" })
+                    }
+                    updaters += { s -> t.text = "> ${s.lastTerminalLine.ifBlank { "_" }}" }
+                }
+                "light_sensor" -> {
+                    val t = tv(20f, green, true)
+                    inner.addView(label("CAHAYA"))
+                    inner.addView(t)
+                    updaters += { s ->
+                        t.text = s.lightLux?.let { "${it.roundToInt()} lx" } ?: "— lx"
+                    }
+                }
+            }
+            return card
         }
     }
 
@@ -302,6 +524,15 @@ class NexusPagerAdapter(private val actions: PageActions) :
         val HM_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
         val DATE_FMT: DateTimeFormatter =
             DateTimeFormatter.ofPattern("EEEE, dd MMM yyyy", Locale.forLanguageTag("id-ID"))
+        val DAY_FMT: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("EEEE", Locale.forLanguageTag("id-ID"))
+        val SHORT_DATE_FMT: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("dd MMM yyyy", Locale.forLanguageTag("id-ID"))
+
+        fun dp(ctx: Context, v: Int): Int = (v * ctx.resources.displayMetrics.density).toInt()
+
+        fun fmtTime(millis: Long, fmt: DateTimeFormatter): String =
+            LocalDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneId.systemDefault()).format(fmt)
 
         fun estimatedPosition(m: MediaState): Long {
             if (!m.hasSession) return 0L

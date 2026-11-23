@@ -38,11 +38,29 @@
                 android:gravity="center_vertical"
                 android:orientation="horizontal">
 
-                <View
-                    android:id="@+id/coverArt"
-                    android:layout_width="88dp"
-                    android:layout_height="88dp"
-                    android:background="@drawable/bg_cover_synthwave" />
+                <!-- Piringan hitam (belakang, berputar) + album art (depan, diam) -->
+                <FrameLayout
+                    android:layout_width="96dp"
+                    android:layout_height="96dp">
+
+                    <ImageView
+                        android:id="@+id/vinylDisc"
+                        android:layout_width="96dp"
+                        android:layout_height="96dp"
+                        android:contentDescription="Piringan hitam"
+                        android:src="@drawable/ic_vinyl_disc" />
+
+                    <ImageView
+                        android:id="@+id/albumArt"
+                        android:layout_width="46dp"
+                        android:layout_height="46dp"
+                        android:layout_gravity="center"
+                        android:background="@drawable/bg_album_circle"
+                        android:clipToOutline="true"
+                        android:contentDescription="Sampul album"
+                        android:scaleType="centerCrop"
+                        android:src="@drawable/ic_album_default" />
+                </FrameLayout>
 
                 <LinearLayout
                     android:layout_width="0dp"

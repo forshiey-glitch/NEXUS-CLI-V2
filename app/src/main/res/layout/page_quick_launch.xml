@@ -1,29 +1,42 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<com.nexus.cli.LongPressLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
     android:padding="12dp">
 
-    <TextView
-        android:id="@+id/quickTitle"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="6dp"
-        android:fontFamily="monospace"
-        android:letterSpacing="0.2"
-        android:text="QUICK LAUNCH"
-        android:textColor="@color/nexus_green"
-        android:textSize="12sp"
-        android:textStyle="bold" />
-
-    <GridLayout
-        android:id="@+id/quickGrid"
+    <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_marginTop="6dp"
-        android:layout_weight="1"
-        android:columnCount="4"
-        android:rowCount="3" />
+        android:layout_height="match_parent"
+        android:orientation="vertical">
 
-</LinearLayout>
+        <TextView
+            android:id="@+id/quickTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:fontFamily="monospace"
+            android:letterSpacing="0.2"
+            android:text="QUICK LAUNCH"
+            android:textColor="@color/nexus_green"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:id="@+id/widgetContainer"
+            android:layout_width="match_parent"
+            android:layout_height="76dp"
+            android:layout_marginTop="4dp"
+            android:orientation="horizontal"
+            android:visibility="gone" />
+
+        <GridLayout
+            android:id="@+id/quickGrid"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginTop="2dp"
+            android:layout_weight="1"
+            android:columnCount="4"
+            android:rowCount="3" />
+
+    </LinearLayout>
+</com.nexus.cli.LongPressLayout>

@@ -1,57 +1,219 @@
 package com.nexus.cli
 
-import kotlinx.coroutines.CancellationException
+import android.content.Context
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.util.Locale
+
+/**
+ * Jembatan antar komponen. MainActivity mengisi terminalPrinter, terminalClearer, micToggle,
+ * matrixStart, dan matrixStop.
+ */
+object NexusBus {
+    @Volatile
+    var terminalPrinter: ((String) -> Unit)? = null
+
+    @Volatile
+    var terminalClearer: (() -> Unit)? = null
+
+    @Volatile
+    var micToggle: ((Boolean) -> Unit)? = null
+
+    @Volatile
+    var matrixStart: (() -> Unit)? = null
+
+    @Volatile
+    var matrixStop: (() -> Unit)? = null
+
+    fun print(text: String) {
+        terminalPrinter?.invoke(text)
+    }
+
+    fun clear() {
+        terminalClearer?.invoke()
+    }
+}
 
 class ShellEngine(
-    private val ctx: ShellContext,
-    private val registry: CommandRegistry = CommandRegistry()
+    context: Context,
+    private val registry: CommandRegistry,
+    private val shellContext: ShellContext,
+    cpuProvider: () -> Float
 ) {
 
-    suspend fun execute(raw: String): ShellResult {
-        val tokens = tokenize(raw)
-        if (tokens.isEmpty()) return ShellResult()
+    private val appContext = context.applicationContext
+    private val sensorCommand = SensorCommand(appContext)
+    private val chartCommand = ChartCommand(cpuProvider)
 
-        val expanded = expandAlias(tokens)
-        if (expanded.isEmpty()) return ShellResult()
+    /** Harus dipanggil dari main thread (sensor, chart, matrix, dan media memakai main thread). */
+    suspend fun execute(rawLine: String): ShellResult {
+        val line = rawLine.trim()
+        if (line.isEmpty()) return ShellResult()
 
-        val name = expanded.first()
-        val args = expanded.drop(1)
-
-        val command = registry.find(name)
-            ?: return ShellResult.error("nexus: $name: command not found. Ketik 'help'.")
-
-        return try {
-            command.run(ctx, args)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            ShellResult.error("$name: ${e.message ?: e.javaClass.simpleName}")
-        }
-    }
-
-    private fun expandAlias(tokens: List<String>): List<String> {
-        val replacement = ctx.fs.aliasOf(tokens.first()) ?: return tokens
-        return tokenize(replacement) + tokens.drop(1)
-    }
-
-    private fun tokenize(input: String): List<String> {
-        val out = mutableListOf<String>()
-        val sb = StringBuilder()
-        var quote: Char? = null
-        for (ch in input.trim()) {
-            when {
-                quote != null -> if (ch == quote) quote = null else sb.append(ch)
-                ch == '"' || ch == '\'' -> quote = ch
-                ch.isWhitespace() -> {
-                    if (sb.isNotEmpty()) {
-                        out.add(sb.toString())
-                        sb.setLength(0)
-                    }
-                }
-                else -> sb.append(ch)
+        // Redirect: ">" (timpa) atau ">>" (tambah)
+        var commandPart = line
+        var redirectTarget: String? = null
+        var append = false
+        val redirectIdx = line.lastIndexOf('>')
+        if (redirectIdx >= 0) {
+            append = redirectIdx > 0 && line[redirectIdx - 1] == '>'
+            redirectTarget = line.substring(redirectIdx + 1).trim()
+            commandPart = line.substring(0, if (append) redirectIdx - 1 else redirectIdx).trim()
+            if (redirectTarget.isEmpty()) {
+                return ShellResult.error("shell: syntax error, target redirect kosong")
             }
         }
-        if (sb.isNotEmpty()) out.add(sb.toString())
-        return out
+
+        // Pipe: "a | b | c"
+        val segments = commandPart.split("|").map { it.trim() }.filter { it.isNotEmpty() }
+        if (segments.isEmpty()) return ShellResult.error("shell: syntax error")
+
+        val allowAsync = segments.size == 1 && redirectTarget == null
+        var stdin: String? = null
+        var last = ShellResult()
+
+        for (segment in segments) {
+            last = runSegment(segment, stdin, allowAsync)
+            val hasError = last.lines.any { it.type == LineType.ERROR }
+            if (hasError || last.exit) return last
+            stdin = last.lines.joinToString("\n") { it.text }
+        }
+
+        if (redirectTarget != null) {
+            return try {
+                shellContext.fs.write(redirectTarget, stdin.orEmpty(), append)
+                ShellResult()
+            } catch (e: Exception) {
+                ShellResult.error("shell: gagal menulis ke $redirectTarget: ${e.message}")
+            }
+        }
+        return last
+    }
+
+    private suspend fun runSegment(segment: String, stdin: String?, allowAsync: Boolean): ShellResult {
+        val tokens = expandAlias(segment).split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (tokens.isEmpty()) return ShellResult()
+        val name = tokens.first()
+        val cmd = name.lowercase(Locale.ROOT)
+        val args = tokens.drop(1)
+
+        // Filter pipe
+        if (stdin != null) {
+            when (cmd) {
+                "grep" -> {
+                    val needle = args.firstOrNull().orEmpty()
+                    return ShellResult.out(stdin.lines().filter { it.contains(needle, ignoreCase = true) })
+                }
+                "head" -> {
+                    val n = args.firstOrNull()?.toIntOrNull() ?: 10
+                    return ShellResult.out(stdin.lines().take(n))
+                }
+                "tail" -> {
+                    val n = args.firstOrNull()?.toIntOrNull() ?: 10
+                    return ShellResult.out(stdin.lines().takeLast(n))
+                }
+                "wc" -> {
+                    val lines = stdin.lines()
+                    val words = stdin.split(Regex("\\s+")).count { it.isNotEmpty() }
+                    return ShellResult.out("${lines.size} lines, $words words")
+                }
+            }
+        }
+
+        return when (cmd) {
+            "sensor" -> {
+                if (!allowAsync) return asyncNotPipeable("sensor")
+                sensorCommand.execute(args) { NexusBus.print(it) }
+                ShellResult()
+            }
+            "chart" -> {
+                if (!allowAsync) return asyncNotPipeable("chart")
+                chartCommand.execute(args) { NexusBus.print(it) }
+                ShellResult()
+            }
+            "matrix" -> {
+                if (!allowAsync) return asyncNotPipeable("matrix")
+                matrixCommand(args)
+            }
+            "voice-on" -> toggleVoice(true)
+            "voice-off" -> toggleVoice(false)
+            "media" -> mediaCommand(args)
+            else -> runRegistry(cmd, args)
+        }
+    }
+
+    private suspend fun runRegistry(cmd: String, args: List<String>): ShellResult {
+        val command = registry.find(cmd)
+            ?: return ShellResult.error("$cmd: command not found (ketik 'help')")
+        val result = withContext(Dispatchers.Default) { command.run(shellContext, args) }
+        if (cmd != "help") return result
+        return result.copy(lines = result.lines + EXTRA_HELP.map { TerminalLine(it, LineType.OUTPUT) })
+    }
+
+    private fun expandAlias(segment: String): String {
+        val first = segment.substringBefore(' ')
+        val value = shellContext.fs.aliasOf(first) ?: return segment
+        return value + segment.removePrefix(first)
+    }
+
+    private fun asyncNotPipeable(name: String): ShellResult =
+        ShellResult.error("$name: perintah ini tidak bisa dipakai dengan pipe/redirect.")
+
+    private fun toggleVoice(enable: Boolean): ShellResult {
+        val toggle = NexusBus.micToggle
+            ?: return ShellResult.error("[voice] UI belum siap, coba lagi.")
+        toggle(enable)
+        return ShellResult()
+    }
+
+    /** `matrix` -> startMatrixRain(); `matrix stop` -> stopMatrixRain(). */
+    private fun matrixCommand(args: List<String>): ShellResult {
+        val sub = args.firstOrNull()?.lowercase(Locale.ROOT)
+        return when (sub) {
+            null -> {
+                val start = NexusBus.matrixStart
+                    ?: return ShellResult.error("[matrix] UI belum siap, coba lagi.")
+                start()
+                ShellResult.out("[matrix] dimulai. Ketik 'matrix stop' untuk berhenti.")
+            }
+            "stop", "off" -> {
+                val stop = NexusBus.matrixStop
+                    ?: return ShellResult.error("[matrix] UI belum siap, coba lagi.")
+                stop()
+                ShellResult.out("[matrix] dihentikan.")
+            }
+            else -> ShellResult.error("usage: matrix [stop]")
+        }
+    }
+
+    private fun mediaCommand(args: List<String>): ShellResult {
+        MediaRepository.attach(appContext)
+        val sub = args.firstOrNull()?.lowercase(Locale.ROOT)
+        when (sub) {
+            "skip", "next" -> MediaRepository.next()
+            "prev", "previous", "back" -> MediaRepository.previous()
+            "play" -> MediaRepository.play()
+            "pause" -> MediaRepository.pause()
+            "toggle", "playpause" -> MediaRepository.playPause()
+            else -> return ShellResult.error("usage: media <skip|prev|play|pause|toggle>")
+        }
+        return ShellResult.out("[media] $sub")
+    }
+
+    fun close() {
+        sensorCommand.stop()
+        chartCommand.close()
+    }
+
+    private companion object {
+        val EXTRA_HELP = listOf(
+            "  sensor <list|light|accel|stop>  Baca sensor perangkat",
+            "  chart cpu        Grafik batang CPU (10 data terakhir)",
+            "  matrix [stop]    Hujan karakter Matrix di terminal",
+            "  voice-on         Aktifkan mikrofon (Hey Nexus)",
+            "  voice-off        Matikan mikrofon",
+            "  media <skip|prev|play|pause|toggle>  Kontrol media",
+            "  Pipe: cmd | grep|head|tail|wc   Redirect: cmd > file, cmd >> file"
+        )
     }
 }

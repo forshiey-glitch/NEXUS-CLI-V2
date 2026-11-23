@@ -17,6 +17,7 @@ class AppRepository(
 ) {
 
     private val pm: PackageManager = context.packageManager
+    private val prefs = context.getSharedPreferences(VoiceForegroundService.PREFS_NAME, Context.MODE_PRIVATE)
 
     private fun installedApplications(): List<ApplicationInfo> {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -58,7 +59,9 @@ class AppRepository(
 
     fun launchPackage(packageName: String): Boolean {
         val intent = launchIntentFor(packageName) ?: return false
-        return start(intent)
+        val ok = start(intent)
+        if (ok) recordLaunch(packageName)
+        return ok
     }
 
     fun launchFirstInstalled(vararg packages: String): Boolean {
@@ -78,5 +81,11 @@ class AppRepository(
         } catch (e: Exception) {
             false
         }
+    }
+
+    /** Hitung berapa kali app dibuka lewat launcher ini (dipakai untuk memilih app musik favorit). */
+    private fun recordLaunch(packageName: String) {
+        val key = MediaRepository.LAUNCH_COUNT_PREFIX + packageName
+        prefs.edit().putInt(key, prefs.getInt(key, 0) + 1).apply()
     }
 }
