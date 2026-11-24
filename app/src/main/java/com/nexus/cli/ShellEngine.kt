@@ -1,6 +1,7 @@
 package com.nexus.cli
 
 import android.content.Context
+import com.nexus.cli.nexusnet.NexusNetCommand
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.Locale
@@ -45,8 +46,17 @@ class ShellEngine(
     private val sensorCommand = SensorCommand(appContext)
     private val chartCommand = ChartCommand(cpuProvider)
 
+    /** Modul Wi-Fi lab (legal, tanpa cracking). MainActivity mengisi onNeedLocationPermission. */
+    val nexusNet = NexusNetCommand(appContext)
+
+    /** True saat terminal menunggu password Wi-Fi: echo harus disamarkan, baris tidak boleh di-parse. */
+    val isAwaitingSecret: Boolean get() = nexusNet.isAwaitingPassword
+
     /** Harus dipanggil dari main thread (sensor, chart, matrix, dan media memakai main thread). */
     suspend fun execute(rawLine: String): ShellResult {
+        // Baris password langsung ke NexusNetCommand: tanpa trim/tokenize/alias/pipe/redirect.
+        if (nexusNet.isAwaitingPassword) return nexusNetSecretInput(rawLine)
+
         val line = rawLine.trim()
         if (line.isEmpty()) return ShellResult()
 
@@ -138,8 +148,22 @@ class ShellEngine(
             "voice-on" -> toggleVoice(true)
             "voice-off" -> toggleVoice(false)
             "media" -> mediaCommand(args)
+            "nexus-net" -> nexusNetCommand(args)
             else -> runRegistry(cmd, args)
         }
+    }
+
+    /** `nexus-net <scan|stop|select|connect|db|log|help>` -> NexusNetCommand. */
+    private suspend fun nexusNetCommand(args: List<String>): ShellResult {
+        val text = withContext(Dispatchers.Default) { nexusNet.execute(args) }
+        return ShellResult.out(text.lines())
+    }
+
+    private suspend fun nexusNetSecretInput(raw: String): ShellResult {
+        val text = withContext(Dispatchers.Default) {
+            nexusNet.handleInput(raw.trimEnd('\r', '\n'))
+        }
+        return ShellResult.out(text.lines())
     }
 
     private suspend fun runRegistry(cmd: String, args: List<String>): ShellResult {
@@ -213,6 +237,7 @@ class ShellEngine(
             "  voice-on         Aktifkan mikrofon (Hey Nexus)",
             "  voice-off        Matikan mikrofon",
             "  media <skip|prev|play|pause|toggle>  Kontrol media",
+            "  nexus-net <scan|stop|select|connect|db|log|help>  Wi-Fi Lab (legal, tanpa cracking)",
             "  Pipe: cmd | grep|head|tail|wc   Redirect: cmd > file, cmd >> file"
         )
     }

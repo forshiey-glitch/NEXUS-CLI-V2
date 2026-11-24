@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">NEXUS-CLI-V2</string>
+    <!-- Sisipkan isi strings_nexus_net.xml di sini jika ingin satu file -->
 </resources>

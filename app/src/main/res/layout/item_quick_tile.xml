@@ -4,34 +4,33 @@
     style="@style/Widget.Nexus.GlassCard"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:clickable="true"
-    android:focusable="true"
-    app:rippleColor="@color/nexus_green_soft">
+    android:layout_margin="4dp"
+    app:cardCornerRadius="14dp">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:gravity="center"
         android:orientation="vertical"
-        android:padding="6dp">
+        android:padding="8dp">
 
-        <TextView
+        <ImageView
             android:id="@+id/tileIcon"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:fontFamily="monospace"
-            android:text=">_"
-            android:textColor="@color/nexus_green"
-            android:textSize="24sp"
-            android:textStyle="bold" />
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:contentDescription="@null"
+            app:tint="@color/nexus_green" />
 
         <TextView
             android:id="@+id/tileLabel"
-            android:layout_width="wrap_content"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
-            android:text="Label"
+            android:ellipsize="end"
+            android:fontFamily="monospace"
+            android:gravity="center"
+            android:maxLines="2"
             android:textColor="@color/text_primary"
-            android:textSize="12sp" />
+            android:textSize="10sp" />
     </LinearLayout>
 </com.google.android.material.card.MaterialCardView>
