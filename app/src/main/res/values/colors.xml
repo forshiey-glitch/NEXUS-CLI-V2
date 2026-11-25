@@ -19,4 +19,10 @@
 
     <color name="text_primary">#F2F2F5</color>
     <color name="text_secondary">#8C8C96</color>
+
+    <!-- Dipakai view_wifi_lab_card.xml (NEXUS-NET) -->
+    <color name="nn_green">#00FF66</color>
+    <color name="nn_green_soft">#2200FF66</color>
+    <color name="nn_text_primary">#F2F2F5</color>
+    <color name="nn_text_secondary">#8C8C96</color>
 </resources>

@@ -6,6 +6,7 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import java.util.Locale
 
 /**
  * Semua peluncuran app eksternal lewat [start], sehingga [onBeforeLaunch]
@@ -17,7 +18,10 @@ class AppRepository(
 ) {
 
     private val pm: PackageManager = context.packageManager
-    private val prefs = context.getSharedPreferences(VoiceForegroundService.PREFS_NAME, Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences(
+        VoiceForegroundService.PREFS_NAME,
+        Context.MODE_PRIVATE
+    )
 
     private fun installedApplications(): List<ApplicationInfo> {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -36,25 +40,29 @@ class AppRepository(
     }
 
     fun listApps(): List<AppInfo> {
-        return installedApplications()
-            .asSequence()
-            .filter { it.packageName != context.packageName }
-            .filter { launchIntentFor(it.packageName) != null }
-            .map { AppInfo(pm.getApplicationLabel(it).toString(), it.packageName) }
-            .distinctBy { it.packageName }
-            .sortedBy { it.label.lowercase() }
-            .toList()
+        val result: List<AppInfo> = installedApplications()
+            .filter { app: ApplicationInfo -> app.packageName != context.packageName }
+            .filter { app: ApplicationInfo -> launchIntentFor(app.packageName) != null }
+            .map { app: ApplicationInfo ->
+                AppInfo(
+                    label = pm.getApplicationLabel(app).toString(),
+                    packageName = app.packageName
+                )
+            }
+            .distinctBy { info: AppInfo -> info.packageName }
+            .sortedBy { info: AppInfo -> info.label.lowercase(Locale.getDefault()) }
+        return result
     }
 
     fun findApp(query: String): AppInfo? {
-        val q = query.trim().lowercase()
+        val q = query.trim().lowercase(Locale.getDefault())
         if (q.isEmpty()) return null
-        val apps = listApps()
-        return apps.firstOrNull { it.label.lowercase() == q }
-            ?: apps.firstOrNull { it.packageName.lowercase() == q }
-            ?: apps.firstOrNull { it.label.lowercase().startsWith(q) }
-            ?: apps.firstOrNull { it.label.lowercase().contains(q) }
-            ?: apps.firstOrNull { it.packageName.lowercase().contains(q) }
+        val apps: List<AppInfo> = listApps()
+        return apps.firstOrNull { it.label.lowercase(Locale.getDefault()) == q }
+            ?: apps.firstOrNull { it.packageName.lowercase(Locale.getDefault()) == q }
+            ?: apps.firstOrNull { it.label.lowercase(Locale.getDefault()).startsWith(q) }
+            ?: apps.firstOrNull { it.label.lowercase(Locale.getDefault()).contains(q) }
+            ?: apps.firstOrNull { it.packageName.lowercase(Locale.getDefault()).contains(q) }
     }
 
     fun launchPackage(packageName: String): Boolean {

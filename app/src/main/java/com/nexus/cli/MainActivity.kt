@@ -1,34 +1,29 @@
 package com.nexus.cli
 
 /*
- * ===================== INSTRUKSI PERUBAHAN (WAJIB) =====================
- * A) LAYOUT MEDIA PLAYER (XML):
- *   1. vinylDisc -> ShapeableImageView bulat:
+ * ============================ CATATAN XML (WAJIB) ============================
+ * 1) res/layout/page_media_clock.xml  (BUG DISC MENGHILANG)
+ *    vinylDisc harus ShapeableImageView DENGAN gambar sumber + scaleType + overlay bulat:
  *      <com.google.android.material.imageview.ShapeableImageView
- *          android:id="@+id/vinylDisc" android:scaleType="centerCrop"
- *          app:shapeAppearanceOverlay="@style/Nexus.Circle" ... />
- *      <style name="Nexus.Circle" parent="">
- *          <item name="cornerFamily">rounded</item>
- *          <item name="cornerSize">50%</item>
- *      </style>
- *   2. Progress: horizontal ProgressBar neon (atau LinearProgressIndicator / di bawah SparklineView):
- *      <ProgressBar style="?android:attr/progressBarStyleHorizontal" android:max="10000"
- *          android:progressTint="#00FF66" android:progressBackgroundTint="#2200FF66" ... />
- *
- * B) NexusPagerAdapter.kt (file ini tidak ada di sini, tambahkan 4 hal):
- *   1. Saat bind Halaman 1:  NexusUi.makeCircular(vinylDisc)
- *   2. Klik: HAPUS listener onMediaCardClick dari btnPlayPause dan dari kartu;
- *            pasang HANYA di vinylDisc dan albumArt -> actions.onMediaCardClick()
- *            btnPlayPause tetap -> actions.onMediaPlayPause()  (kini hanya play/pause di tempat)
- *   3. Di setMedia(state):  NexusUi.animateProgress(mediaProgress, <isPlaying>, <positionMs>, <durationMs>)
- *                           NexusUi.spinVinyl(vinylDisc, <isPlaying>)
- *   4. Halaman 2: HAPUS pemicu kustomisasi saat swipe/scroll. Untuk setiap widget:
- *                 NexusUi.attachLongPress(widgetView) { actions.onQuickLaunchLongPress() }   // 5000 ms
- *                 (jangan pakai setOnLongClickListener). Ukuran widget: QuickWidgetStore.sizeOf(context, id)
- *                 -> cols/rows untuk span GridLayoutManager. setWidgets() dipanggil ulang saat disimpan.
- *   5. Halaman 4: tambahkan <com.nexus.cli.nexusnet.WifiLabCard android:id="@+id/wifiLabCard" .../>
- *                 lalu di bind: wifiLabCard.attachTo(wifiLabCard.context as LifecycleOwner)
- * ======================================================================
+ *          android:id="@+id/vinylDisc"
+ *          android:layout_width="96dp" android:layout_height="96dp"
+ *          android:scaleType="centerCrop"
+ *          app:srcCompat="@drawable/ic_vinyl_disc"
+ *          app:shapeAppearanceOverlay="@style/Nexus.Circle" />
+ *    Penyebab gambar hilang: (a) android:src di-set ke @android:color/transparent atau kosong,
+ *    (b) outlineProvider/clipToOutline kustom menimpa clip bawaan ShapeableImageView,
+ *    (c) style overlay tidak ada. NexusUi.prepareVinyl() di bawah memuat ulang drawable,
+ *    memaksa bulat TANPA menimpa outline ShapeableImageView, dan memastikan view terlihat.
+ *    res/values/styles_nexus_shapes.xml harus berisi:
+ *      <style name="Nexus.Circle" parent=""><item name="cornerFamily">rounded</item>
+ *          <item name="cornerSize">50%</item></style>
+ * 2) mediaProgress: LinearProgressIndicator/ProgressBar horizontal dengan android:max="10000".
+ *    Animasi dijalankan NexusUi.animateProgress() (ObjectAnimator pada properti "progress").
+ * 3) res/layout/page_quick_launch.xml: widgetContainer = GridLayout 4 kolom (bukan LinearLayout)
+ *    supaya ukuran widget (1x1, 2x1, 2x2, 4x1) benar-benar menjadi span kolom/baris.
+ * 4) NexusPagerAdapter: klik buka-app-musik HANYA di vinylDisc/albumArt -> actions.onMediaCardClick();
+ *    btnPlayPause -> actions.onMediaPlayPause() (play/pause di tempat).
+ * =============================================================================
  */
 
 import android.Manifest
@@ -70,6 +65,7 @@ import android.view.animation.LinearInterpolator
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -77,6 +73,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.annotation.DrawableRes
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -192,6 +189,20 @@ class MainActivity : AppCompatActivity(), PageActions {
             }
         }
 
+    // Izin lokasi dibutuhkan Android agar nama Wi-Fi (SSID) bisa dibaca di status bar.
+    private val ssidPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
+
+    private fun askLocationForSsidOnce() {
+        val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED
+        if (granted || prefs.getBoolean(KEY_ASKED_LOCATION, false)) return
+        prefs.edit().putBoolean(KEY_ASKED_LOCATION, true).apply()
+        ssidPermissionLauncher.launch(
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+        )
+    }
+
     // ---------- Lifecycle ----------
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -219,6 +230,7 @@ class MainActivity : AppCompatActivity(), PageActions {
         setupTerminal()
         setupMic()
         setupBackHandler()
+        askLocationForSsidOnce()
 
         startClockLoop()
         startMetricsLoop()
@@ -247,6 +259,7 @@ class MainActivity : AppCompatActivity(), PageActions {
         NexusBus.matrixStop = null
         binding.matrixRain.stopMatrixRain()
         widgetSheet?.dismiss()
+        monitor.close()
         try {
             unregisterReceiver(voiceReceiver)
         } catch (_: IllegalArgumentException) {
@@ -329,35 +342,38 @@ class MainActivity : AppCompatActivity(), PageActions {
     /** Dipicu HANYA oleh long press 5000 ms (NexusUi.attachLongPress di adapter). */
     override fun onQuickLaunchLongPress() {
         if (widgetSheet?.isShowing == true) return
-        val candidates = LinkedHashSet<String>().apply {
-            addAll(QuickWidgets.default)
-            addAll(widgets)
-            add("light_sensor")
-        }.toList()
+        // Semua widget yang dikenal (QuickWidgets.all), bukan hanya yang sedang aktif.
+        val candidates = QuickWidgets.all.keys.toList()
+        val pressed = NexusUi.pressedWidget
+        NexusUi.pressedWidget = null
 
         widgetSheet = QuickWidgetEditorSheet(
             context = this,
             candidates = candidates,
             active = widgets,
             sizes = QuickWidgetStore.sizes(this),
+            initialId = pressed,
             onSave = { id, size ->
-                widgets = widgets + id
                 QuickWidgetStore.saveSize(this, id, size)
-                persistWidgets()
+                applyWidgets(widgets + id)
             },
             onDelete = { id ->
-                widgets = widgets - id
                 QuickWidgetStore.removeSize(this, id)
-                persistWidgets()
+                applyWidgets(widgets - id)
             }
         ).also { it.show() }
     }
 
-    /** Simpan ke SharedPreferences lalu render ulang Quick Launch. */
-    private fun persistWidgets() {
+    /**
+     * Simpan set widget ke SharedPreferences lalu render ulang Halaman 2.
+     * reloadWidgets() WAJIB: set bisa sama persis (hanya ukuran yang berubah), sehingga
+     * perbandingan set saja tidak akan memicu pembangunan ulang widget.
+     */
+    private fun applyWidgets(newSet: Set<String>) {
+        widgets = newSet
         prefs.edit().putStringSet(KEY_WIDGETS, HashSet(widgets)).apply()
         pagerAdapter.setWidgets(widgets)
-        binding.viewPager.adapter?.notifyItemChanged(QUICK_LAUNCH_PAGE)
+        pagerAdapter.reloadWidgets()
         syncLightSensor()
     }
 
@@ -648,7 +664,8 @@ class MainActivity : AppCompatActivity(), PageActions {
             }
             return
         }
-        launchApp("Aplikasi musik", "com.spotify.music", "com.google.android.apps.youtube.music")
+        val ok = MediaRepository.launchMostUsedMusic { pkg -> apps.launchPackage(pkg) }
+        if (!ok) launchApp("Aplikasi musik", "com.spotify.music", "com.google.android.apps.youtube.music")
     }
 
     private fun launchApp(label: String, vararg packages: String, fallbackUrl: String? = null) {
@@ -729,11 +746,12 @@ class MainActivity : AppCompatActivity(), PageActions {
     private companion object {
         const val KEY_WIDGETS = "quick_widgets"
         const val QUICK_LAUNCH_PAGE = 1
+        const val KEY_ASKED_LOCATION = "asked_location_ssid"
     }
 }
 
 // ============================================================================
-// NexusUi: helper yang dipanggil NexusPagerAdapter (bug disc, progress, long press 5 detik)
+// NexusUi: helper yang dipanggil NexusPagerAdapter
 // ============================================================================
 
 object NexusUi {
@@ -741,62 +759,84 @@ object NexusUi {
     const val PROGRESS_MAX = 10_000
     const val QUICK_LONG_PRESS_MS = 5_000L
 
-    private val progressAnims = WeakHashMap<View, ObjectAnimator>()
-    private val vinylAnims = WeakHashMap<View, ObjectAnimator>()
+    /** Widget yang sedang ditekan (diisi adapter saat ACTION_DOWN, dibaca MainActivity). */
+    @Volatile
+    var pressedWidget: String? = null
 
-    /** Disc harus bulat: ShapeableImageView ATAU ImageView biasa. */
-    fun makeCircular(view: View) {
+    private val progressAnims = WeakHashMap<View, ObjectAnimator>()
+
+    /**
+     * Pastikan piringan terlihat DAN bulat.
+     * - Muat ulang drawable (mencegah gambar kosong saat tipe view berganti ke ShapeableImageView).
+     * - ShapeableImageView: cukup shapeAppearance bulat; JANGAN menimpa outlineProvider-nya
+     *   (itu yang membuat gambar hilang). ImageView biasa: pakai outline oval.
+     */
+    fun prepareVinyl(view: ImageView, @DrawableRes drawableRes: Int) {
+        view.setImageResource(drawableRes)
+        view.scaleType = ImageView.ScaleType.CENTER_CROP
+        view.alpha = 1f
+        view.visibility = View.VISIBLE
+        applyCircle(view)
+    }
+
+    /** Dipakai juga untuk albumArt (bitmap bisa persegi). */
+    fun applyCircle(view: ImageView) {
         if (view is ShapeableImageView) {
             view.shapeAppearanceModel = view.shapeAppearanceModel.toBuilder()
                 .setAllCornerSizes(RelativeCornerSize(0.5f))
                 .build()
-        }
-        view.outlineProvider = object : ViewOutlineProvider() {
-            override fun getOutline(v: View, outline: Outline) {
-                outline.setOval(0, 0, v.width, v.height)
+        } else {
+            view.outlineProvider = object : ViewOutlineProvider() {
+                override fun getOutline(v: View, outline: Outline) {
+                    outline.setOval(0, 0, v.width, v.height)
+                }
             }
+            view.clipToOutline = true
         }
-        view.clipToOutline = true
     }
 
-    /** Progress bergerak halus dari posisi sekarang sampai akhir lagu (ObjectAnimator pada "progress"). */
-    fun animateProgress(bar: ProgressBar, isPlaying: Boolean, positionMs: Long, durationMs: Long) {
-        progressAnims.remove(bar)?.cancel()
+    /**
+     * Progress bergerak halus: ObjectAnimator linear pada "progress" dari posisi sekarang
+     * sampai akhir lagu (bukan melompat tiap detik). [speed] = kecepatan putar media.
+     */
+    fun animateProgress(
+        bar: ProgressBar,
+        isPlaying: Boolean,
+        positionMs: Long,
+        durationMs: Long,
+        speed: Float = 1f
+    ) {
+        cancelProgress(bar)
         bar.max = PROGRESS_MAX
         val pos = if (durationMs > 0) positionMs.coerceIn(0L, durationMs) else 0L
         val from = if (durationMs > 0) ((pos * PROGRESS_MAX) / durationMs).toInt() else 0
         bar.progress = from
         if (!isPlaying || durationMs <= 0) return
+        val safeSpeed = if (speed > 0f) speed else 1f
         progressAnims[bar] = ObjectAnimator.ofInt(bar, "progress", from, PROGRESS_MAX).apply {
-            duration = (durationMs - pos).coerceAtLeast(1L)
+            duration = ((durationMs - pos) / safeSpeed).toLong().coerceAtLeast(1L)
             interpolator = LinearInterpolator()
             start()
         }
     }
 
-    /** Putar/jeda vinyl tanpa reset sudut. Hanya disc yang berputar, album art diam. */
-    fun spinVinyl(disc: View, playing: Boolean) {
-        val anim = vinylAnims.getOrPut(disc) {
-            ObjectAnimator.ofFloat(disc, View.ROTATION, 0f, 360f).apply {
-                duration = 4_000L
-                repeatCount = ValueAnimator.INFINITE
-                interpolator = LinearInterpolator()
-            }
-        }
-        if (playing) {
-            if (anim.isPaused) anim.resume() else if (!anim.isStarted) anim.start()
-        } else if (anim.isRunning) {
-            anim.pause()
-        }
+    fun cancelProgress(bar: ProgressBar) {
+        progressAnims.remove(bar)?.cancel()
     }
 
     /**
-     * Pemicu HANYA bila ditahan [holdMs] tanpa bergeser; swipe/scroll (ACTION_CANCEL / geser > slop)
-     * membatalkan pemicu. Setelah terpicu, UP dikonsumsi agar widget tidak ikut ter-klik.
+     * Pemicu HANYA bila ditahan [holdMs] tanpa bergeser. Geser > slop atau ACTION_CANCEL
+     * (mis. swipe ViewPager2) membatalkan timer. Setelah terpicu, UP dikonsumsi agar widget
+     * tidak ikut ter-klik. [onDown] dipanggil saat jari menyentuh.
      */
     @SuppressLint("ClickableViewAccessibility")
-    fun attachLongPress(target: View, holdMs: Long = QUICK_LONG_PRESS_MS, onTrigger: () -> Unit) {
-        val slop = ViewConfiguration.get(target.context).scaledTouchSlop
+    fun attachLongPress(
+        target: View,
+        holdMs: Long = QUICK_LONG_PRESS_MS,
+        onDown: () -> Unit = {},
+        onTrigger: () -> Unit
+    ) {
+        val slop = ViewConfiguration.get(target.context).scaledTouchSlop * 1.5f
         var downX = 0f
         var downY = 0f
         var fired = false
@@ -811,11 +851,13 @@ object NexusUi {
                     fired = false
                     downX = e.rawX
                     downY = e.rawY
+                    onDown()
+                    target.removeCallbacks(trigger)
                     target.postDelayed(trigger, holdMs)
                 }
                 MotionEvent.ACTION_MOVE ->
                     if (hypot(e.rawX - downX, e.rawY - downY) > slop) target.removeCallbacks(trigger)
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
                     target.removeCallbacks(trigger)
             }
             fired && (e.actionMasked == MotionEvent.ACTION_UP || e.actionMasked == MotionEvent.ACTION_CANCEL)
@@ -890,12 +932,15 @@ class QuickWidgetEditorSheet(
     private val candidates: List<String>,
     private val active: Set<String>,
     sizes: Map<String, WidgetBoxSize>,
+    initialId: String? = null,
     private val onSave: (String, WidgetBoxSize) -> Unit,
     private val onDelete: (String) -> Unit
 ) {
 
     private val work = HashMap<String, WidgetBoxSize>(sizes)
-    private var selId: String = candidates.firstOrNull { it in active } ?: candidates.first()
+    private var selId: String = initialId?.takeIf { it in candidates }
+        ?: candidates.firstOrNull { it in active }
+        ?: candidates.first()
     private var dialog: BottomSheetDialog? = null
 
     val isShowing: Boolean get() = dialog?.isShowing == true
@@ -1024,7 +1069,8 @@ class QuickWidgetEditorSheet(
     private fun dp(v: Int): Int = (v * context.resources.displayMetrics.density + 0.5f).toInt()
 
     private fun labelOf(id: String): String =
-        id.split('_').joinToString(" ") { part -> part.replaceFirstChar { it.uppercase() } }
+        QuickWidgets.all[id]
+            ?: id.split('_').joinToString(" ") { part -> part.replaceFirstChar { it.uppercase() } }
 
     private fun emojiOf(id: String): String = when {
         "light" in id -> "💡"

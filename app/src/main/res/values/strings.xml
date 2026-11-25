@@ -1,4 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">NEXUS-CLI-V2</string>
-    <!-- Sisipkan isi strings_nexus_net.xml di sini jika ingin satu file -->
+
+    <!-- page_media_clock.xml -->
+    <string name="media_prev_desc">Lagu sebelumnya</string>
+    <string name="media_play_pause_desc">Putar atau jeda</string>
+    <string name="media_next_desc">Lagu berikutnya</string>
+
+    <!-- page_quick_launch.xml -->
+    <string name="quick_launch_title">QUICK LAUNCH</string>
+
+    <!-- view_wifi_lab_card.xml (NEXUS-NET) -->
+    <string name="nexus_net_title">NEXUS-NET // WIFI LAB</string>
+    <string name="nexus_net_scan_idle">Scan: idle</string>
+    <string name="nexus_net_target_none">Target: belum dipilih</string>
+    <string name="nexus_net_connect_none">Koneksi: -</string>
 </resources>

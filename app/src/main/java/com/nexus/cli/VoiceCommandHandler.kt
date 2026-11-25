@@ -41,6 +41,7 @@ class VoiceCommandHandler(
     private var beepMuted = false
     private var wasMusicActive = false
     private var guardBlockedUntil = 0L
+    private var lastStealAt = 0L
     private var lastMedia: MediaAction? = null
     private var lastMediaAt = 0L
 
@@ -90,7 +91,16 @@ class VoiceCommandHandler(
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, appContext.packageName)
         }
 
-        wasMusicActive = audio.isMusicActive
+        // "Musik seharusnya jalan" = sedang main, ATAU baru saja dicuri mic (jangan lupa saat restart),
+        // KECUALI user baru menekan pause/next/dll (ikuti keinginan user).
+        val now = SystemClock.uptimeMillis()
+        val activeNow = audio.isMusicActive
+        wasMusicActive = when {
+            now - MediaRepository.lastUserActionAt < USER_ACTION_WINDOW_MS -> activeNow
+            activeNow -> true
+            now - lastStealAt < STEAL_MEMORY_MS -> wasMusicActive
+            else -> false
+        }
         setBeepMuted(true)
         try {
             sr.startListening(intent)
@@ -98,15 +108,26 @@ class VoiceCommandHandler(
             scheduleRestart(RESTART_DELAY_ERROR_MS)
         }
 
-        // Jika mic membuat musik berhenti (audio focus), lanjutkan lagi.
+        // SpeechRecognizer sistem meminta audio focus sendiri tiap sesi dan bisa menjeda lagu.
+        // Kita TIDAK meminta focus (dan tidak memakai MODE_IN_COMMUNICATION); sebagai gantinya
+        // lagu dilanjutkan otomatis beberapa kali setelah sesi mulai dan setelah sesi selesai.
+        scheduleGuard(GUARD_AFTER_START_MS)
+    }
+
+    private fun scheduleGuard(delaysMs: LongArray) {
         guardHandler.removeCallbacksAndMessages(null)
-        guardHandler.postDelayed({ guardMusic() }, MUSIC_GUARD_DELAY_MS)
+        delaysMs.forEach { d -> guardHandler.postDelayed({ guardMusic() }, d) }
     }
 
     private fun guardMusic() {
         if (!listening || !wasMusicActive) return
-        if (SystemClock.uptimeMillis() < guardBlockedUntil) return
-        if (!audio.isMusicActive) MediaRepository.play()
+        val now = SystemClock.uptimeMillis()
+        if (now < guardBlockedUntil) return
+        if (now - MediaRepository.lastUserActionAt < USER_ACTION_WINDOW_MS) return
+        if (!audio.isMusicActive) {
+            lastStealAt = now
+            MediaRepository.resumeSilently()
+        }
     }
 
     /** Matikan bunyi beep recognizer (hanya stream NOTIFICATION/SYSTEM; STREAM_MUSIC tidak disentuh). */
@@ -141,6 +162,7 @@ class VoiceCommandHandler(
         override fun onEvent(eventType: Int, params: Bundle?) = Unit
 
         override fun onError(error: Int) {
+            scheduleGuard(GUARD_AFTER_END_MS)
             when (error) {
                 SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> {
                     listening = false
@@ -181,6 +203,7 @@ class VoiceCommandHandler(
                 ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 .orEmpty()
             lastPartial = ""
+            scheduleGuard(GUARD_AFTER_END_MS)
 
             if (candidates.isNotEmpty()) {
                 onSpeechDetected()
@@ -247,7 +270,10 @@ class VoiceCommandHandler(
         private const val RESTART_DELAY_BUSY_MS = 2000L
         private const val RESTART_DELAY_ERROR_MS = 1000L
         private const val PARTIAL_THROTTLE_MS = 300L
-        private const val MUSIC_GUARD_DELAY_MS = 900L
+        private val GUARD_AFTER_START_MS = longArrayOf(500L, 1200L, 2200L, 3500L)
+        private val GUARD_AFTER_END_MS = longArrayOf(400L, 1100L)
+        private const val USER_ACTION_WINDOW_MS = 5000L
+        private const val STEAL_MEMORY_MS = 8000L
         private const val MEDIA_DEBOUNCE_MS = 2500L
         private const val GUARD_BLOCK_MS = 4000L
     }

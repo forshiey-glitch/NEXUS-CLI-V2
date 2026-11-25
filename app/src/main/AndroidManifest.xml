@@ -54,7 +54,6 @@
             android:exported="false"
             android:foregroundServiceType="location" />
 
-        <!-- TODO: samakan nama class di bawah dengan class asli proyekmu -->
         <service
             android:name=".VoiceForegroundService"
             android:exported="false"
@@ -69,7 +68,7 @@
         </receiver>
 
         <service
-            android:name=".MediaNotificationListener"
+            android:name=".NexusNotificationListener"
             android:exported="true"
             android:label="NEXUS Media"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">

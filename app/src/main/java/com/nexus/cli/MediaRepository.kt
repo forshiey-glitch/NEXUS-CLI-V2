@@ -37,6 +37,15 @@ object MediaRepository {
     private var controller: MediaController? = null
     private var hasAccess = false
 
+    /** Waktu (uptimeMillis) aksi media terakhir dari pengguna/suara. Dipakai guard mic agar tidak melawan user. */
+    @Volatile
+    var lastUserActionAt = 0L
+        private set
+
+    private fun markUserAction() {
+        lastUserActionAt = SystemClock.uptimeMillis()
+    }
+
     private val knownPackages = setOf(
         "com.spotify.music",
         "com.google.android.apps.youtube.music"
@@ -130,6 +139,7 @@ object MediaRepository {
     // ---------- kontrol (fallback ke Media Button jika belum ada session) ----------
 
     fun playPause() {
+        markUserAction()
         val c = controller
         if (c == null) {
             sendKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
@@ -143,21 +153,34 @@ object MediaRepository {
     }
 
     fun play() {
+        markUserAction()
+        val c = controller
+        if (c != null) c.transportControls.play() else sendKey(KeyEvent.KEYCODE_MEDIA_PLAY)
+    }
+
+    /**
+     * Dipakai guard mikrofon untuk melanjutkan lagu yang dihentikan SpeechRecognizer (audio focus).
+     * TIDAK menandai aksi pengguna.
+     */
+    fun resumeSilently() {
         val c = controller
         if (c != null) c.transportControls.play() else sendKey(KeyEvent.KEYCODE_MEDIA_PLAY)
     }
 
     fun pause() {
+        markUserAction()
         val c = controller
         if (c != null) c.transportControls.pause() else sendKey(KeyEvent.KEYCODE_MEDIA_PAUSE)
     }
 
     fun next() {
+        markUserAction()
         val c = controller
         if (c != null) c.transportControls.skipToNext() else sendKey(KeyEvent.KEYCODE_MEDIA_NEXT)
     }
 
     fun previous() {
+        markUserAction()
         val c = controller
         if (c != null) c.transportControls.skipToPrevious() else sendKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS)
     }
@@ -196,6 +219,13 @@ object MediaRepository {
             delay(1800L)
             if (!isMusicActive()) sendKey(KeyEvent.KEYCODE_MEDIA_PLAY)
         }
+    }
+
+    /** Klik piringan/sampul: buka aplikasi musik yang paling sering dibuka (tanpa mengirim Play). */
+    fun launchMostUsedMusic(launch: (String) -> Boolean): Boolean {
+        val ctx = appContext ?: return false
+        val pkg = mostUsedMusicPackage(ctx) ?: return false
+        return launch(pkg)
     }
 
     @Suppress("DEPRECATION")

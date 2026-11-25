@@ -1,201 +1,43 @@
-<?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="horizontal"
-    android:padding="12dp">
-
-    <!-- KIRI: Media Player -->
-    <com.google.android.material.card.MaterialCardView
-        android:id="@+id/mediaCard"
-        style="@style/Widget.Nexus.GlassCard"
-        android:layout_width="0dp"
-        android:layout_height="match_parent"
-        android:layout_marginEnd="8dp"
-        android:layout_weight="6">
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:orientation="vertical"
-            android:padding="16dp">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:fontFamily="monospace"
-                android:text="NOW PLAYING"
-                android:textColor="@color/nexus_green"
-                android:textSize="11sp"
-                android:textStyle="bold" />
-
-            <FrameLayout
-                android:layout_width="match_parent"
-                android:layout_height="0dp"
-                android:layout_marginTop="12dp"
-                android:layout_weight="1">
-
-                <!--
-                    BUG DISC: wajib ShapeableImageView + shapeAppearanceOverlay bulat.
-                    JANGAN ganti ke ImageView biasa.
-                -->
-                <com.google.android.material.imageview.ShapeableImageView
-                    android:id="@+id/vinylDisc"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:layout_gravity="center"
-                    android:scaleType="centerCrop"
-                    android:src="@android:color/transparent"
-                    app:shapeAppearanceOverlay="@style/Nexus.Circle" />
-
-                <com.google.android.material.imageview.ShapeableImageView
-                    android:id="@+id/albumArt"
-                    android:layout_width="72dp"
-                    android:layout_height="72dp"
-                    android:layout_gravity="bottom|end"
-                    android:layout_margin="8dp"
-                    android:scaleType="centerCrop"
-                    app:shapeAppearanceOverlay="@style/Nexus.Rounded" />
-            </FrameLayout>
-
-            <TextView
-                android:id="@+id/mediaTitle"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:ellipsize="end"
-                android:fontFamily="monospace"
-                android:maxLines="1"
-                android:text="—"
-                android:textColor="@color/text_primary"
-                android:textSize="14sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/mediaArtist"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:ellipsize="end"
-                android:fontFamily="monospace"
-                android:maxLines="1"
-                android:text="—"
-                android:textColor="@color/text_secondary"
-                android:textSize="11sp" />
-
-            <!--
-                ANIMASI GARIS MEDIA: ProgressBar horizontal (bukan default spinner).
-                ObjectAnimator di NexusUi.animateProgress menganimasikan properti "progress".
-            -->
-            <ProgressBar
-                android:id="@+id/mediaProgress"
-                style="?android:attr/progressBarStyleHorizontal"
-                android:layout_width="match_parent"
-                android:layout_height="6dp"
-                android:layout_marginTop="10dp"
-                android:max="10000"
-                android:progress="0"
-                android:progressDrawable="@drawable/bg_media_progress" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:gravity="center"
-                android:orientation="horizontal">
-
-                <ImageButton
-                    android:id="@+id/btnPrev"
-                    android:layout_width="44dp"
-                    android:layout_height="44dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:contentDescription="@string/media_prev_desc"
-                    android:src="@android:drawable/ic_media_previous"
-                    app:tint="@color/nexus_green" />
-
-                <!--
-                    btnPlayPause: HANYA play/pause di tempat.
-                    Listener buka aplikasi musik dipindah ke vinylDisc/albumArt.
-                -->
-                <ImageButton
-                    android:id="@+id/btnPlayPause"
-                    android:layout_width="52dp"
-                    android:layout_height="52dp"
-                    android:layout_marginHorizontal="16dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:contentDescription="@string/media_play_pause_desc"
-                    android:src="@android:drawable/ic_media_play"
-                    app:tint="@color/nexus_green" />
-
-                <ImageButton
-                    android:id="@+id/btnNext"
-                    android:layout_width="44dp"
-                    android:layout_height="44dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:contentDescription="@string/media_next_desc"
-                    android:src="@android:drawable/ic_media_next"
-                    app:tint="@color/nexus_green" />
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="horizontal" android:padding="12dp">
+    <com.google.android.material.card.MaterialCardView android:id="@+id/mediaCard" style="@style/Widget.Nexus.GlassCard" android:layout_width="0dp" android:layout_height="match_parent" android:layout_marginEnd="8dp" android:layout_weight="11">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:padding="18dp">
+            <TextView android:id="@+id/mediaSourceLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="monospace" android:letterSpacing="0.2" android:text="MEDIA" android:textColor="@color/nexus_green" android:textSize="11sp" android:textStyle="bold"/>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:gravity="center_vertical" android:orientation="horizontal">
+                <!--  Piringan hitam (belakang, berputar) + album art (depan, diam)  -->
+                <FrameLayout android:layout_width="96dp" android:layout_height="96dp">
+                    <!--
+                                            BUG DISC: ShapeableImageView WAJIB punya gambar sumber (srcCompat) + scaleType,
+                                            dan overlay bulat. Jangan set src ke transparent / kosong.
+                                            Overlay @style/Nexus.Circle ada di res/values/styles_nexus_shapes.xml.
+                                         -->
+                    <com.google.android.material.imageview.ShapeableImageView android:id="@+id/vinylDisc" android:layout_width="96dp" android:layout_height="96dp" android:contentDescription="Piringan hitam" android:scaleType="centerCrop" app:shapeAppearanceOverlay="@style/Nexus.Circle" app:srcCompat="@drawable/ic_vinyl_disc"/>
+                    <ImageView android:id="@+id/albumArt" android:layout_width="46dp" android:layout_height="46dp" android:layout_gravity="center" android:background="@drawable/bg_album_circle" android:clipToOutline="true" android:contentDescription="Sampul album" android:scaleType="centerCrop" android:src="@drawable/ic_album_default"/>
+                </FrameLayout>
+                <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="14dp" android:layout_weight="1" android:orientation="vertical">
+                    <TextView android:id="@+id/trackTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:ellipsize="end" android:maxLines="2" android:text="Tidak ada media" android:textColor="@color/text_primary" android:textSize="20sp" android:textStyle="bold"/>
+                    <TextView android:id="@+id/trackArtist" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:ellipsize="end" android:maxLines="2" android:text="—" android:textColor="@color/text_secondary" android:textSize="14sp"/>
+                </LinearLayout>
+            </LinearLayout>
+            <Space android:layout_width="0dp" android:layout_height="0dp" android:layout_weight="1"/>
+            <com.google.android.material.progressindicator.LinearProgressIndicator android:id="@+id/mediaProgress" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="10000" android:progress="0" app:indicatorColor="@color/nexus_green" app:trackColor="@color/glass_stroke" app:trackCornerRadius="2dp" app:trackThickness="4dp"/>
+            <TextView android:id="@+id/mediaTime" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:fontFamily="monospace" android:gravity="end" android:text="0:00 / 0:00" android:textColor="@color/text_secondary" android:textSize="11sp"/>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:gravity="center" android:orientation="horizontal">
+                <ImageButton android:id="@+id/btnPrev" android:layout_width="52dp" android:layout_height="52dp" android:background="?attr/selectableItemBackgroundBorderless" android:contentDescription="Previous" android:src="@drawable/ic_prev" app:tint="@color/nexus_green"/>
+                <ImageButton android:id="@+id/btnPlayPause" android:layout_width="60dp" android:layout_height="52dp" android:layout_marginHorizontal="12dp" android:background="?attr/selectableItemBackgroundBorderless" android:contentDescription="Play or pause" android:src="@drawable/ic_play" app:tint="@color/nexus_green"/>
+                <ImageButton android:id="@+id/btnNext" android:layout_width="52dp" android:layout_height="52dp" android:background="?attr/selectableItemBackgroundBorderless" android:contentDescription="Next" android:src="@drawable/ic_next" app:tint="@color/nexus_green"/>
             </LinearLayout>
         </LinearLayout>
     </com.google.android.material.card.MaterialCardView>
-
-    <!-- KANAN: Jam + Cuaca -->
-    <com.google.android.material.card.MaterialCardView
-        style="@style/Widget.Nexus.GlassCard"
-        android:layout_width="0dp"
-        android:layout_height="match_parent"
-        android:layout_marginStart="8dp"
-        android:layout_weight="4">
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:orientation="vertical"
-            android:padding="16dp">
-
-            <TextView
-                android:id="@+id/clockBig"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:fontFamily="monospace"
-                android:gravity="end"
-                android:text="00:00"
-                android:textColor="@color/nexus_green"
-                android:textSize="48sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/dateText"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:fontFamily="monospace"
-                android:gravity="end"
-                android:text="—"
-                android:textColor="@color/text_secondary"
-                android:textSize="12sp" />
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:layout_marginVertical="12dp"
-                android:background="@color/glass_stroke" />
-
-            <TextView
-                android:id="@+id/weatherNow"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:fontFamily="monospace"
-                android:text="Cuaca: —"
-                android:textColor="@color/text_primary"
-                android:textSize="14sp" />
-
-            <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/forecastList"
-                android:layout_width="match_parent"
-                android:layout_height="0dp"
-                android:layout_marginTop="8dp"
-                android:layout_weight="1"
-                android:overScrollMode="never" />
+    <com.google.android.material.card.MaterialCardView android:id="@+id/clockCard" style="@style/Widget.Nexus.GlassCard" android:layout_width="0dp" android:layout_height="match_parent" android:layout_marginStart="8dp" android:layout_weight="9">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:padding="18dp">
+            <TextView android:id="@+id/clockText" android:layout_width="match_parent" android:layout_height="84dp" android:autoSizeMaxTextSize="76sp" android:autoSizeMinTextSize="28sp" android:autoSizeStepGranularity="2sp" android:autoSizeTextType="uniform" android:fontFamily="monospace" android:gravity="center_vertical|start" android:maxLines="1" android:text="00:00" android:textColor="@color/text_primary" android:textStyle="bold"/>
+            <TextView android:id="@+id/dateText" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="—" android:textColor="@color/text_secondary" android:textSize="14sp"/>
+            <View android:layout_width="match_parent" android:layout_height="1dp" android:layout_marginVertical="12dp" android:background="@color/glass_stroke"/>
+            <TextView android:id="@+id/weatherCity" android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="monospace" android:letterSpacing="0.2" android:text="JAKARTA" android:textColor="@color/nexus_green" android:textSize="11sp" android:textStyle="bold"/>
+            <TextView android:id="@+id/weatherText" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:text="Memuat cuaca…" android:textColor="@color/text_primary" android:textSize="16sp"/>
+            <Space android:layout_width="0dp" android:layout_height="0dp" android:layout_weight="1"/>
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="monospace" android:letterSpacing="0.2" android:text="FORECAST" android:textColor="@color/text_secondary" android:textSize="10sp"/>
+            <LinearLayout android:id="@+id/forecastContainer" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:orientation="horizontal"/>
         </LinearLayout>
     </com.google.android.material.card.MaterialCardView>
 </LinearLayout>

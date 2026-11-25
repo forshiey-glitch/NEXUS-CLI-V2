@@ -5,8 +5,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.wifi.WifiInfo
+import android.net.wifi.WifiManager
 import android.os.BatteryManager
+import android.os.Build
 import android.os.Process
 import android.os.SystemClock
 import android.net.TrafficStats
@@ -23,7 +27,14 @@ class SystemMonitor(private val context: Context) {
         context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
     private val connectivity =
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    private val wifiManager =
+        context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
     private val cores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+
+    /** SSID dari callback jaringan default (Android 12+ hanya terbaca lewat FLAG_INCLUDE_LOCATION_INFO). */
+    @Volatile
+    private var callbackSsid: String? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     private var lastStatTotal = 0L
     private var lastStatIdle = 0L
@@ -40,6 +51,21 @@ class SystemMonitor(private val context: Context) {
         "/sys/class/kgsl/kgsl-3d0/devfreq/gpu_load",
         "/sys/kernel/gpu/gpu_busy"
     )
+
+    init {
+        registerNetworkCallback()
+    }
+
+    /** Wajib dipanggil saat Activity dihancurkan. */
+    fun close() {
+        networkCallback?.let {
+            try {
+                connectivity.unregisterNetworkCallback(it)
+            } catch (_: Exception) {
+            }
+        }
+        networkCallback = null
+    }
 
     fun sample(): MetricsSnapshot {
         val (usedMb, totalMb) = memoryUsageMb()
@@ -86,16 +112,73 @@ class SystemMonitor(private val context: Context) {
 
     // ---------- Network ----------
 
+    private fun registerNetworkCallback() {
+        try {
+            val cb: ConnectivityManager.NetworkCallback =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    object : ConnectivityManager.NetworkCallback(
+                        ConnectivityManager.NetworkCallback.FLAG_INCLUDE_LOCATION_INFO
+                    ) {
+                        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                            callbackSsid = (caps.transportInfo as? WifiInfo)?.ssid?.let { cleanSsid(it) }
+                        }
+
+                        override fun onLost(network: Network) {
+                            callbackSsid = null
+                        }
+                    }
+                } else {
+                    object : ConnectivityManager.NetworkCallback() {
+                        override fun onLost(network: Network) {
+                            callbackSsid = null
+                        }
+                    }
+                }
+            connectivity.registerDefaultNetworkCallback(cb)
+            networkCallback = cb
+        } catch (e: Exception) {
+            networkCallback = null
+        }
+    }
+
+    /** Jaringan aktif yang punya INTERNET; fallback ke jaringan lain bila activeNetwork null (OEM/VPN). */
+    @Suppress("DEPRECATION")
+    private fun currentCaps(): NetworkCapabilities? {
+        val active = connectivity.activeNetwork?.let { connectivity.getNetworkCapabilities(it) }
+        if (active != null && active.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return active
+        return connectivity.allNetworks.asSequence()
+            .mapNotNull { connectivity.getNetworkCapabilities(it) }
+            .firstOrNull { it.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) }
+    }
+
+    private fun cleanSsid(raw: String): String? {
+        val s = raw.trim().trim('"')
+        return if (s.isEmpty() || s.equals("<unknown ssid>", ignoreCase = true)) null else s
+    }
+
+    @Suppress("DEPRECATION")
+    private fun legacySsid(): String? = try {
+        wifiManager.connectionInfo?.ssid?.let { cleanSsid(it) }
+    } catch (e: Exception) {
+        null
+    }
+
+    /**
+     * Wi-Fi -> nama SSID, seluler -> "CELL", tidak ada jaringan -> "OFFLINE".
+     * Tanda " !" bila terhubung tetapi belum VALIDATED (mis. captive portal / tanpa internet).
+     */
     private fun readNetLabel(): String {
-        val caps = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
-            ?: return "OFFLINE"
-        return when {
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "WIFI"
+        val caps = currentCaps() ?: return "OFFLINE"
+        val validated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        val base = when {
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ->
+                (callbackSsid ?: legacySsid() ?: "WIFI").take(MAX_SSID_CHARS)
             caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "CELL"
             caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ETH"
             caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "VPN"
             else -> "ONLINE"
         }
+        return if (validated) base else "$base !"
     }
 
     /** Pair(rx KB/s, tx KB/s). */
@@ -189,5 +272,9 @@ class SystemMonitor(private val context: Context) {
         File(path).readText().trim()
     } catch (e: Exception) {
         null
+    }
+
+    private companion object {
+        const val MAX_SSID_CHARS = 14
     }
 }
