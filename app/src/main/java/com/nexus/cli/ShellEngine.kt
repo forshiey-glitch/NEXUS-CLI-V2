@@ -7,8 +7,7 @@ import kotlinx.coroutines.withContext
 import java.util.Locale
 
 /**
- * Jembatan antar komponen. MainActivity mengisi terminalPrinter, terminalClearer, micToggle,
- * matrixStart, dan matrixStop.
+ * Jembatan antar komponen. MainActivity mengisi terminalPrinter, terminalClearer, dan micToggle.
  */
 object NexusBus {
     @Volatile
@@ -19,12 +18,6 @@ object NexusBus {
 
     @Volatile
     var micToggle: ((Boolean) -> Unit)? = null
-
-    @Volatile
-    var matrixStart: (() -> Unit)? = null
-
-    @Volatile
-    var matrixStop: (() -> Unit)? = null
 
     fun print(text: String) {
         terminalPrinter?.invoke(text)
@@ -52,7 +45,7 @@ class ShellEngine(
     /** True saat terminal menunggu password Wi-Fi: echo harus disamarkan, baris tidak boleh di-parse. */
     val isAwaitingSecret: Boolean get() = nexusNet.isAwaitingPassword
 
-    /** Harus dipanggil dari main thread (sensor, chart, matrix, dan media memakai main thread). */
+    /** Harus dipanggil dari main thread (sensor, chart, dan media memakai main thread). */
     suspend fun execute(rawLine: String): ShellResult {
         // Baris password langsung ke NexusNetCommand: tanpa trim/tokenize/alias/pipe/redirect.
         if (nexusNet.isAwaitingPassword) return nexusNetSecretInput(rawLine)
@@ -141,10 +134,6 @@ class ShellEngine(
                 chartCommand.execute(args) { NexusBus.print(it) }
                 ShellResult()
             }
-            "matrix" -> {
-                if (!allowAsync) return asyncNotPipeable("matrix")
-                matrixCommand(args)
-            }
             "voice-on" -> toggleVoice(true)
             "voice-off" -> toggleVoice(false)
             "media" -> mediaCommand(args)
@@ -190,26 +179,6 @@ class ShellEngine(
         return ShellResult()
     }
 
-    /** `matrix` -> startMatrixRain(); `matrix stop` -> stopMatrixRain(). */
-    private fun matrixCommand(args: List<String>): ShellResult {
-        val sub = args.firstOrNull()?.lowercase(Locale.ROOT)
-        return when (sub) {
-            null -> {
-                val start = NexusBus.matrixStart
-                    ?: return ShellResult.error("[matrix] UI belum siap, coba lagi.")
-                start()
-                ShellResult.out("[matrix] dimulai. Ketik 'matrix stop' untuk berhenti.")
-            }
-            "stop", "off" -> {
-                val stop = NexusBus.matrixStop
-                    ?: return ShellResult.error("[matrix] UI belum siap, coba lagi.")
-                stop()
-                ShellResult.out("[matrix] dihentikan.")
-            }
-            else -> ShellResult.error("usage: matrix [stop]")
-        }
-    }
-
     private fun mediaCommand(args: List<String>): ShellResult {
         MediaRepository.attach(appContext)
         val sub = args.firstOrNull()?.lowercase(Locale.ROOT)
@@ -233,11 +202,10 @@ class ShellEngine(
         val EXTRA_HELP = listOf(
             "  sensor <list|light|accel|stop>  Baca sensor perangkat",
             "  chart cpu        Grafik batang CPU (10 data terakhir)",
-            "  matrix [stop]    Hujan karakter Matrix di terminal",
             "  voice-on         Aktifkan mikrofon (Hey Nexus)",
             "  voice-off        Matikan mikrofon",
             "  media <skip|prev|play|pause|toggle>  Kontrol media",
-            "  nexus-net <scan|stop|select|connect|db|log|help>  Wi-Fi Lab (legal, tanpa cracking)",
+            "  nexus-net <scan|stop|select|connect|db|log|help>  Wi-Fi Lab",
             "  Pipe: cmd | grep|head|tail|wc   Redirect: cmd > file, cmd >> file"
         )
     }

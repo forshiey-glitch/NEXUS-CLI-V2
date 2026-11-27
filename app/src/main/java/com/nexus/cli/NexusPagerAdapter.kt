@@ -2,39 +2,24 @@ package com.nexus.cli
 
 import android.animation.ObjectAnimator
 import android.annotation.SuppressLint
-import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Typeface
 import android.os.SystemClock
-import android.text.TextUtils
-import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.LinearInterpolator
-import android.widget.GridLayout
-import android.widget.LinearLayout
-import android.widget.TextView
-import androidx.core.content.ContextCompat
-import androidx.lifecycle.LifecycleOwner
 import androidx.recyclerview.widget.RecyclerView
-import com.google.android.material.card.MaterialCardView
 import com.nexus.cli.databinding.ItemForecastDayBinding
-import com.nexus.cli.databinding.ItemQuickTileBinding
-import com.nexus.cli.databinding.PageMediaClockBinding
-import com.nexus.cli.databinding.PageMetricsBinding
-import com.nexus.cli.databinding.PageQuickLaunchBinding
-import com.nexus.cli.databinding.PageWorkGithubBinding
-import com.nexus.cli.nexusnet.WifiLabCard
+import com.nexus.cli.databinding.PageDashboardBinding
+import com.nexus.cli.databinding.PageTerminalBinding
+import com.nexus.cli.nexusnet.WifiSnapshot
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import java.util.Objects
-import kotlin.math.max
-import kotlin.math.roundToInt
 
 /** Animasi tombol: mengecil ke 0.9 saat ditekan lalu kembali 1.0 (100ms, ViewPropertyAnimator). */
 @SuppressLint("ClickableViewAccessibility")
@@ -50,7 +35,10 @@ private fun View.attachPressAnim() {
     }
 }
 
-/** SATU-SATUNYA adapter untuk ViewPager2 (4 halaman). */
+/**
+ * SATU-SATUNYA adapter untuk ViewPager2 (2 halaman):
+ * 0 = Bento Dashboard (Media + Jam/Cuaca + Nexus-Net Panel), 1 = Terminal / Command Center.
+ */
 class NexusPagerAdapter(private val actions: PageActions) :
     RecyclerView.Adapter<NexusPagerAdapter.PageHolder>() {
 
@@ -66,22 +54,17 @@ class NexusPagerAdapter(private val actions: PageActions) :
     private var sessionAccumMs = 0L
     private var sessionFinishedMs = 0L
 
-    /** Naik tiap kali ukuran/jenis widget berubah, agar Halaman 2 dibangun ulang walau set-nya sama. */
-    private var widgetsRevision = 0
-
     // ---------- Adapter ----------
 
-    override fun getItemCount(): Int = 4
+    override fun getItemCount(): Int = PAGE_COUNT
 
     override fun getItemViewType(position: Int): Int = position
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): PageHolder {
         val inflater = LayoutInflater.from(parent.context)
         return when (viewType) {
-            0 -> MediaClockHolder(PageMediaClockBinding.inflate(inflater, parent, false))
-            1 -> QuickLaunchHolder(PageQuickLaunchBinding.inflate(inflater, parent, false))
-            2 -> WorkGithubHolder(PageWorkGithubBinding.inflate(inflater, parent, false))
-            else -> MetricsHolder(PageMetricsBinding.inflate(inflater, parent, false))
+            PAGE_DASHBOARD -> DashboardHolder(PageDashboardBinding.inflate(inflater, parent, false))
+            else -> TerminalHolder(PageTerminalBinding.inflate(inflater, parent, false))
         }
     }
 
@@ -92,7 +75,7 @@ class NexusPagerAdapter(private val actions: PageActions) :
 
     override fun onViewRecycled(holder: PageHolder) {
         holders.remove(holder)
-        (holder as? MediaClockHolder)?.release()
+        (holder as? DashboardHolder)?.release()
         super.onViewRecycled(holder)
     }
 
@@ -108,32 +91,10 @@ class NexusPagerAdapter(private val actions: PageActions) :
         renderAll()
     }
 
-    fun setWidgets(widgets: Set<String>) {
-        state = state.copy(widgets = widgets)
-        renderAll()
-    }
-
-    /** Paksa Halaman 2 membangun ulang widget (dipakai setelah ukuran widget disimpan). */
-    fun reloadWidgets() {
-        widgetsRevision++
-        renderAll()
-    }
-
-    fun setLightLux(lux: Float?) {
-        state = state.copy(lightLux = lux)
-        renderAll()
-    }
-
-    fun setLastTerminalLine(line: String) {
-        state = state.copy(lastTerminalLine = line)
-        renderAll()
-    }
-
-    /** Tambah titik sparkline + simpan snapshot. Teks dirender oleh [tick]. */
-    fun pushMetrics(snapshot: MetricsSnapshot) {
-        state = state.copy(metrics = snapshot)
-        holders.filterIsInstance<MetricsHolder>().forEach { it.pushSparks(snapshot) }
-        holders.filterIsInstance<QuickLaunchHolder>().forEach { it.pushCpu(snapshot.cpuPct) }
+    /** Hasil polling Wi-Fi (dipanggil MainActivity tiap ~1 detik). */
+    fun setWifi(wifi: WifiSnapshot) {
+        state = state.copy(wifi = wifi)
+        holders.filterIsInstance<DashboardHolder>().forEach { it.renderWifi(wifi) }
     }
 
     /** Dipanggil tiap detik: jam, progress lagu, timer sesi. */
@@ -176,12 +137,13 @@ class NexusPagerAdapter(private val actions: PageActions) :
         tick()
     }
 
-    // ---------- Halaman 1: Media + Jam/Cuaca ----------
+    // ---------- Halaman 1: Bento Dashboard ----------
 
-    inner class MediaClockHolder(private val b: PageMediaClockBinding) : PageHolder(b.root) {
+    inner class DashboardHolder(private val b: PageDashboardBinding) : PageHolder(b.root) {
 
         private var shownWeather: WeatherInfo? = null
         private var shownArt: Bitmap? = null
+        private var shownWifi: WifiSnapshot? = null
 
         // Hanya piringan yang berputar; albumArt tetap diam di tengah.
         private val vinylAnimator: ObjectAnimator =
@@ -211,6 +173,8 @@ class NexusPagerAdapter(private val actions: PageActions) :
             b.btnPrev.attachPressAnim()
             b.btnPlayPause.attachPressAnim()
             b.btnNext.attachPressAnim()
+
+            b.nexusNetPanel.onSelect = { target -> actions.onWifiSelected(target) }
         }
 
         fun release() {
@@ -225,6 +189,12 @@ class NexusPagerAdapter(private val actions: PageActions) :
             } else if (vinylAnimator.isRunning) {
                 vinylAnimator.pause()
             }
+        }
+
+        fun renderWifi(wifi: WifiSnapshot) {
+            if (wifi === shownWifi) return
+            shownWifi = wifi
+            b.nexusNetPanel.render(wifi)
         }
 
         override fun render(state: UiState) {
@@ -280,6 +250,8 @@ class NexusPagerAdapter(private val actions: PageActions) :
                 shownWeather = w
                 rebuildForecast(w)
             }
+
+            renderWifi(state.wifi)
         }
 
         private fun rebuildForecast(w: WeatherInfo?) {
@@ -296,234 +268,15 @@ class NexusPagerAdapter(private val actions: PageActions) :
         }
     }
 
-    // ---------- Halaman 2: Quick Launch 4x3 + widget ----------
+    // ---------- Halaman 2: Terminal / Command Center ----------
 
-    inner class QuickLaunchHolder(private val b: PageQuickLaunchBinding) : PageHolder(b.root) {
-
-        private var shownWidgets: Set<String>? = null
-        private var shownRevision = -1
-        private var builtWidth = 0
-        private val updaters = ArrayList<(UiState) -> Unit>()
-        private var cpuSpark: SparklineView? = null
-
-        init {
-            val inflater = LayoutInflater.from(b.root.context)
-            val margin = (6 * b.root.resources.displayMetrics.density).toInt()
-
-            QuickTiles.all.forEachIndexed { index, tile ->
-                val tb = ItemQuickTileBinding.inflate(inflater, b.quickGrid, false)
-                tb.tileIcon.text = tile.glyph
-                tb.tileLabel.text = tile.label
-                tb.root.setOnClickListener { actions.onTileClick(tile) }
-
-                val lp = GridLayout.LayoutParams(
-                    GridLayout.spec(index / 4, GridLayout.FILL, 1f),
-                    GridLayout.spec(index % 4, GridLayout.FILL, 1f)
-                ).apply {
-                    width = 0
-                    height = 0
-                    setMargins(margin, margin, margin, margin)
-                }
-                b.quickGrid.addView(tb.root, lp)
-            }
-
-            // Tekan lama 5000 ms (batal jika jari bergeser/swipe) -> BottomSheet "Kustomisasi Widget".
-            b.root.longPressMs = NexusUi.QUICK_LONG_PRESS_MS
-            b.root.onLongPress = { actions.onQuickLaunchLongPress() }
-
-            // Lebar sel widget bergantung lebar halaman: bangun ulang saat lebar sudah/ berubah.
-            b.root.addOnLayoutChangeListener { _, left, _, right, _, _, _, _, _ ->
-                val w = right - left
-                if (w > 0 && w != builtWidth && shownWidgets != null) {
-                    b.root.post { shownWidgets?.let { rebuildWidgets(it) } }
-                }
-            }
-        }
-
-        fun pushCpu(value: Float) {
-            cpuSpark?.addValue(value)
-        }
-
-        override fun render(state: UiState) {
-            if (state.widgets != shownWidgets || shownRevision != widgetsRevision) {
-                shownWidgets = state.widgets
-                shownRevision = widgetsRevision
-                rebuildWidgets(state.widgets)
-            }
-            updaters.forEach { it(state) }
-        }
-
-        /**
-         * Widget ditata di GridLayout 4 kolom. Ukuran (1x1, 2x1, 1x2, 2x2, 4x1) dari QuickWidgetStore
-         * diterapkan sebagai SPAN kolom/baris + lebar/tinggi piksel yang pasti (tanpa weight,
-         * karena weight GridLayout tidak andal untuk sel yang span).
-         */
-        private fun rebuildWidgets(selected: Set<String>) {
-            val ctx = b.root.context
-            updaters.clear()
-            cpuSpark = null
-            b.widgetContainer.removeAllViews()
-
-            val keys = QuickWidgets.all.keys.filter { it in selected }
-            b.widgetContainer.visibility = if (keys.isEmpty()) View.GONE else View.VISIBLE
-            if (keys.isEmpty()) return
-
-            val columns = b.widgetContainer.columnCount
-            val margin = dp(ctx, 4)
-            val unitH = dp(ctx, WIDGET_UNIT_DP)
-
-            var available = b.root.width - b.root.paddingLeft - b.root.paddingRight
-            if (available <= 0) available = ctx.resources.displayMetrics.widthPixels - 2 * dp(ctx, 12)
-            builtWidth = b.root.width
-            val cellW = (available - columns * 2 * margin) / columns
-
-            keys.forEach { key ->
-                val size = QuickWidgetStore.sizeOf(ctx, key)
-                val cols = size.cols.coerceIn(1, columns)
-                val rows = size.rows.coerceAtLeast(1)
-
-                val lp = GridLayout.LayoutParams(
-                    GridLayout.spec(GridLayout.UNDEFINED, rows),
-                    GridLayout.spec(GridLayout.UNDEFINED, cols)
-                ).apply {
-                    width = cols * cellW + (cols - 1) * 2 * margin
-                    height = rows * unitH + (rows - 1) * 2 * margin
-                    setMargins(margin, margin, margin, margin)
-                }
-
-                val card = buildWidget(ctx, key)
-                // Long press 5 detik per widget; key disimpan agar BottomSheet langsung memilih widget ini.
-                NexusUi.attachLongPress(
-                    card,
-                    NexusUi.QUICK_LONG_PRESS_MS,
-                    onDown = { NexusUi.pressedWidget = key }
-                ) { actions.onQuickLaunchLongPress() }
-                b.widgetContainer.addView(card, lp)
-            }
-            b.widgetContainer.requestLayout()
-        }
-
-        private fun buildWidget(ctx: Context, key: String): View {
-            val green = ContextCompat.getColor(ctx, R.color.nexus_green)
-            val white = ContextCompat.getColor(ctx, R.color.text_primary)
-            val gray = ContextCompat.getColor(ctx, R.color.text_secondary)
-
-            val card = MaterialCardView(ctx).apply {
-                radius = dp(ctx, 16).toFloat()
-                cardElevation = 0f
-                setCardBackgroundColor(ContextCompat.getColor(ctx, R.color.glass_fill))
-                strokeColor = ContextCompat.getColor(ctx, R.color.glass_stroke)
-                strokeWidth = dp(ctx, 1)
-            }
-            val inner = LinearLayout(ctx).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER
-                setPadding(dp(ctx, 8), dp(ctx, 6), dp(ctx, 8), dp(ctx, 6))
-            }
-            card.addView(
-                inner,
-                ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-            )
-
-            fun tv(sp: Float, color: Int, bold: Boolean = false) = TextView(ctx).apply {
-                textSize = sp
-                setTextColor(color)
-                typeface = Typeface.create(Typeface.MONOSPACE, if (bold) Typeface.BOLD else Typeface.NORMAL)
-                gravity = Gravity.CENTER
-                maxLines = 2
-                ellipsize = TextUtils.TruncateAt.END
-            }
-
-            fun label(t: String) = tv(9f, gray).apply {
-                text = t
-                letterSpacing = 0.15f
-            }
-
-            when (key) {
-                "clock_big" -> {
-                    val t = tv(30f, white, true)
-                    inner.addView(label("JAM"))
-                    inner.addView(t)
-                    updaters += { s -> t.text = fmtTime(s.nowMillis, HM_FMT) }
-                }
-                "calendar" -> {
-                    val day = tv(13f, green, true)
-                    val date = tv(12f, white)
-                    inner.addView(label("KALENDER"))
-                    inner.addView(day)
-                    inner.addView(date)
-                    updaters += { s ->
-                        day.text = fmtTime(s.nowMillis, DAY_FMT)
-                        date.text = fmtTime(s.nowMillis, SHORT_DATE_FMT)
-                    }
-                }
-                "weather" -> {
-                    val t = tv(13f, white)
-                    inner.addView(label("CUACA"))
-                    inner.addView(t)
-                    updaters += { s ->
-                        val w = s.weather
-                        t.text = if (w != null) "${w.tempC}°C\n${w.condition}" else "—"
-                    }
-                }
-                "music_player" -> {
-                    val title = tv(12f, white, true)
-                    val artist = tv(10f, gray)
-                    inner.addView(label("MUSIK"))
-                    inner.addView(title)
-                    inner.addView(artist)
-                    card.isClickable = true
-                    card.setOnClickListener { actions.onMediaPlayPause() }
-                    updaters += { s ->
-                        val m = s.media
-                        title.text = if (m.hasSession) m.title else "Tidak ada media"
-                        artist.text = if (m.hasSession) {
-                            "${if (m.isPlaying) "▶" else "⏸"} ${m.artist}"
-                        } else {
-                            "Ketuk untuk putar"
-                        }
-                    }
-                }
-                "cpu_chart" -> {
-                    inner.addView(label("CPU"))
-                    val spark = SparklineView(ctx).apply {
-                        maxPoints = 30
-                        fixedMax = 100f
-                        lineColor = green
-                    }
-                    cpuSpark = spark
-                    inner.addView(spark, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-                }
-                "terminal_mini" -> {
-                    val t = tv(11f, green)
-                    inner.addView(label("TERMINAL"))
-                    inner.addView(t)
-                    card.isClickable = true
-                    card.setOnClickListener {
-                        actions.onTileClick(QuickTiles.all.first { it.id == "terminal" })
-                    }
-                    updaters += { s -> t.text = "> ${s.lastTerminalLine.ifBlank { "_" }}" }
-                }
-                "light_sensor" -> {
-                    val t = tv(20f, green, true)
-                    inner.addView(label("CAHAYA"))
-                    inner.addView(t)
-                    updaters += { s ->
-                        t.text = s.lightLux?.let { "${it.roundToInt()} lx" } ?: "— lx"
-                    }
-                }
-            }
-            return card
-        }
-    }
-
-    // ---------- Halaman 3: Sesi Kerja + GitHub ----------
-
-    inner class WorkGithubHolder(private val b: PageWorkGithubBinding) : PageHolder(b.root) {
+    inner class TerminalHolder(private val b: PageTerminalBinding) : PageHolder(b.root) {
 
         init {
             b.btnSessionToggle.setOnClickListener { toggleSession() }
             b.btnSessionReset.setOnClickListener { resetSession() }
+            b.btnCloseTerminal.setOnClickListener { actions.onTerminalClose() }
+            actions.onTerminalReady(TerminalViews(b.terminalRecycler, b.terminalPrompt, b.terminalInput))
         }
 
         override fun render(state: UiState) {
@@ -542,86 +295,18 @@ class NexusPagerAdapter(private val actions: PageActions) :
         }
     }
 
-    // ---------- Halaman 4: Hardware Metrics ----------
-
-    inner class MetricsHolder(private val b: PageMetricsBinding) : PageHolder(b.root) {
-
-        init {
-            val ctx = b.root.context
-            b.gpuSpark.lineColor = ContextCompat.getColor(ctx, R.color.nexus_amber)
-            b.netSpark.lineColor = ContextCompat.getColor(ctx, R.color.nexus_cyan)
-            b.netSpark.fixedMax = null
-
-            // Kartu NEXUS-NET (WifiLabCard) tepat di bawah mini strip, tanpa mengubah page_metrics.xml.
-            val card = WifiLabCard(ctx)
-            val lp = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(ctx, 8) }
-            b.root.addView(card, 1, lp)
-            (ctx as? LifecycleOwner)?.let { card.attachTo(it) }
-        }
-
-        fun pushSparks(s: MetricsSnapshot) {
-            b.cpuSpark.addValue(s.cpuPct)
-            b.gpuSpark.addValue(max(s.gpuPct, 0f))
-            b.ramSpark.addValue(s.ramPct)
-            b.netSpark.addValue(s.rxKbps + s.txKbps)
-        }
-
-        override fun render(state: UiState) {
-            val dt = LocalDateTime.ofInstant(Instant.ofEpochMilli(state.nowMillis), ZoneId.systemDefault())
-            b.miniClock.text = dt.format(HM_FMT)
-
-            val w = state.weather
-            b.miniWeather.text = if (w != null) "${w.condition} ${w.tempC}°C" else "—"
-
-            val m = state.media
-            b.miniMedia.text = if (m.hasSession) {
-                "${if (m.isPlaying) "[PLAY]" else "[PAUSE]"} ${m.title} — ${m.artist}"
-            } else {
-                "Tidak ada media"
-            }
-
-            val s = state.metrics ?: return
-            b.cpuValue.text = "${s.cpuPct.roundToInt()}%"
-            b.cpuDetail.text = "${s.cores} cores"
-
-            if (s.gpuPct >= 0f) {
-                b.gpuValue.text = "${s.gpuPct.roundToInt()}%"
-                b.gpuDetail.text = "load"
-            } else {
-                b.gpuValue.text = "N/A"
-                b.gpuDetail.text = "sensor tidak tersedia"
-            }
-
-            b.ramValue.text = "${s.ramPct.roundToInt()}%"
-            b.ramDetail.text = "${s.ramUsedMb} / ${s.ramTotalMb} MB"
-
-            b.netValue.text = s.netLabel
-            b.netDetail.text = "↓ ${fmtKbps(s.rxKbps)}  ↑ ${fmtKbps(s.txKbps)}"
-        }
-    }
-
     // ---------- helper ----------
 
-    private companion object {
-        /** Tinggi satu baris widget (dp). Widget 2x2 = 2 baris. */
-        const val WIDGET_UNIT_DP = 76
+    companion object {
+        const val PAGE_DASHBOARD = 0
+        const val PAGE_TERMINAL = 1
+        const val PAGE_COUNT = 2
 
-        val HM_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
-        val DATE_FMT: DateTimeFormatter =
+        private val HM_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+        private val DATE_FMT: DateTimeFormatter =
             DateTimeFormatter.ofPattern("EEEE, dd MMM yyyy", Locale.forLanguageTag("id-ID"))
-        val DAY_FMT: DateTimeFormatter =
-            DateTimeFormatter.ofPattern("EEEE", Locale.forLanguageTag("id-ID"))
-        val SHORT_DATE_FMT: DateTimeFormatter =
-            DateTimeFormatter.ofPattern("dd MMM yyyy", Locale.forLanguageTag("id-ID"))
 
-        fun dp(ctx: Context, v: Int): Int = (v * ctx.resources.displayMetrics.density).toInt()
-
-        fun fmtTime(millis: Long, fmt: DateTimeFormatter): String =
-            LocalDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneId.systemDefault()).format(fmt)
-
-        fun estimatedPosition(m: MediaState): Long {
+        private fun estimatedPosition(m: MediaState): Long {
             if (!m.hasSession) return 0L
             val base = if (m.isPlaying) {
                 m.positionMs + ((SystemClock.elapsedRealtime() - m.updatedAtMs) * m.speed).toLong()
@@ -631,17 +316,14 @@ class NexusPagerAdapter(private val actions: PageActions) :
             return if (m.durationMs > 0) base.coerceIn(0L, m.durationMs) else base.coerceAtLeast(0L)
         }
 
-        fun fmtMs(ms: Long): String {
+        private fun fmtMs(ms: Long): String {
             val s = (ms / 1000).coerceAtLeast(0L)
             return "%d:%02d".format(s / 60, s % 60)
         }
 
-        fun fmtHms(ms: Long): String {
+        private fun fmtHms(ms: Long): String {
             val s = (ms / 1000).coerceAtLeast(0L)
             return "%02d:%02d:%02d".format(s / 3600, (s % 3600) / 60, s % 60)
         }
-
-        fun fmtKbps(kbps: Float): String =
-            if (kbps >= 1024f) "%.1f MB/s".format(kbps / 1024f) else "%.0f KB/s".format(kbps)
     }
 }

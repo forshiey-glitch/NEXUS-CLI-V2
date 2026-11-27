@@ -2,34 +2,21 @@ package com.nexus.cli
 
 /*
  * ============================ CATATAN XML (WAJIB) ============================
- * 1) res/layout/page_media_clock.xml  (BUG DISC MENGHILANG)
- *    vinylDisc harus ShapeableImageView DENGAN gambar sumber + scaleType + overlay bulat:
- *      <com.google.android.material.imageview.ShapeableImageView
- *          android:id="@+id/vinylDisc"
- *          android:layout_width="96dp" android:layout_height="96dp"
- *          android:scaleType="centerCrop"
- *          app:srcCompat="@drawable/ic_vinyl_disc"
- *          app:shapeAppearanceOverlay="@style/Nexus.Circle" />
- *    Penyebab gambar hilang: (a) android:src di-set ke @android:color/transparent atau kosong,
- *    (b) outlineProvider/clipToOutline kustom menimpa clip bawaan ShapeableImageView,
- *    (c) style overlay tidak ada. NexusUi.prepareVinyl() di bawah memuat ulang drawable,
- *    memaksa bulat TANPA menimpa outline ShapeableImageView, dan memastikan view terlihat.
- *    res/values/styles_nexus_shapes.xml harus berisi:
- *      <style name="Nexus.Circle" parent=""><item name="cornerFamily">rounded</item>
- *          <item name="cornerSize">50%</item></style>
- * 2) mediaProgress: LinearProgressIndicator/ProgressBar horizontal dengan android:max="10000".
- *    Animasi dijalankan NexusUi.animateProgress() (ObjectAnimator pada properti "progress").
- * 3) res/layout/page_quick_launch.xml: widgetContainer = GridLayout 4 kolom (bukan LinearLayout)
- *    supaya ukuran widget (1x1, 2x1, 2x2, 4x1) benar-benar menjadi span kolom/baris.
- * 4) NexusPagerAdapter: klik buka-app-musik HANYA di vinylDisc/albumArt -> actions.onMediaCardClick();
- *    btnPlayPause -> actions.onMediaPlayPause() (play/pause di tempat).
+ * 1) res/layout/page_dashboard.xml  (Halaman 1 - Bento Dashboard)
+ *    vinylDisc = ShapeableImageView DENGAN app:srcCompat + scaleType + overlay bulat (@style/Nexus.Circle,
+ *    ada di res/values/styles_nexus_shapes.xml). NexusUi.prepareVinyl() memuat ulang drawable dan
+ *    memaksa bulat TANPA menimpa outline ShapeableImageView, sehingga gambar tidak hilang.
+ * 2) mediaProgress: LinearProgressIndicator dengan android:max="10000"; digerakkan ObjectAnimator
+ *    (NexusUi.animateProgress).
+ * 3) res/layout/page_terminal.xml (Halaman 2): terminalRecycler, terminalPrompt, terminalInput,
+ *    btnCloseTerminal, plus timer sesi (sessionTimer, sessionState, btnSessionToggle, btnSessionReset,
+ *    sessionTotalToday).
+ * 4) Klik buka-app-musik HANYA di vinylDisc/albumArt -> onMediaCardClick(); btnPlayPause -> onMediaPlayPause().
  * =============================================================================
  */
 
 import android.Manifest
 import android.animation.ObjectAnimator
-import android.animation.ValueAnimator
-import android.annotation.SuppressLint
 import android.app.ActivityManager
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -37,67 +24,47 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
-import android.graphics.Color
 import android.graphics.Outline
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
-import android.hardware.SensorManager
-import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
-import android.provider.MediaStore
 import android.provider.Settings
 import android.text.InputType
-import android.view.Gravity
-import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
-import android.view.MotionEvent
 import android.view.View
-import android.view.ViewConfiguration
-import android.view.ViewGroup
 import android.view.ViewOutlineProvider
-import android.view.WindowManager
 import android.view.animation.LinearInterpolator
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
-import android.widget.FrameLayout
 import android.widget.ImageView
-import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
-import android.widget.ScrollView
-import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
-import androidx.annotation.DrawableRes
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.DrawableRes
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import androidx.core.graphics.ColorUtils
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.viewpager2.widget.ViewPager2
-import com.google.android.material.bottomsheet.BottomSheetBehavior
-import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.imageview.ShapeableImageView
 import com.google.android.material.shape.RelativeCornerSize
 import com.nexus.cli.databinding.ActivityMainBinding
+import com.nexus.cli.nexusnet.NexusNetPresenter
+import com.nexus.cli.nexusnet.WifiLiveScanner
+import com.nexus.cli.nexusnet.WifiTarget
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.util.WeakHashMap
-import kotlin.math.hypot
 
 class MainActivity : AppCompatActivity(), PageActions {
 
@@ -109,34 +76,21 @@ class MainActivity : AppCompatActivity(), PageActions {
     private lateinit var weather: WeatherRepository
     private lateinit var monitor: SystemMonitor
     private lateinit var shell: ShellEngine
+    private lateinit var wifiScanner: WifiLiveScanner
     private lateinit var pagerAdapter: NexusPagerAdapter
     private val terminalAdapter = TerminalAdapter()
 
     private val clockFmt = DateTimeFormatter.ofPattern("HH:mm")
 
+    // View terminal (Halaman 2) dibuat oleh adapter; null sampai halaman itu dibuat.
+    private var terminalViews: TerminalViews? = null
+
     // Input terminal asli (dipulihkan setelah mode password)
     private var terminalInputType = InputType.TYPE_CLASS_TEXT
-
-    // Kustomisasi Quick Launch
-    private var widgets: Set<String> = QuickWidgets.default
-    private var widgetSheet: QuickWidgetEditorSheet? = null
+    private var terminalInputTypeCaptured = false
 
     // Cek launcher default (sekali per proses)
     private var launcherPromptShown = false
-
-    // Sensor cahaya (hanya aktif jika widget "light_sensor" dipilih)
-    private val sensorManager by lazy { getSystemService(Context.SENSOR_SERVICE) as SensorManager }
-    private var lightLastUpdate = 0L
-    private val lightListener = object : SensorEventListener {
-        override fun onSensorChanged(event: SensorEvent) {
-            val now = SystemClock.elapsedRealtime()
-            if (now - lightLastUpdate < 500L) return
-            lightLastUpdate = now
-            pagerAdapter.setLightLux(event.values[0])
-        }
-
-        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
-    }
 
     // ---------- Voice receiver ----------
 
@@ -158,7 +112,7 @@ class MainActivity : AppCompatActivity(), PageActions {
                         // Suara tidak boleh masuk sebagai password Wi-Fi.
                         appendText("[voice] perintah suara diabaikan: terminal menunggu password.", LineType.SYSTEM)
                     } else if (cmd.isNotBlank()) {
-                        openTerminal(showKeyboard = false)
+                        // Tidak memindahkan halaman: perintah suara berjalan di latar belakang.
                         runCommand(cmd)
                     }
                 }
@@ -189,7 +143,7 @@ class MainActivity : AppCompatActivity(), PageActions {
             }
         }
 
-    // Izin lokasi dibutuhkan Android agar nama Wi-Fi (SSID) bisa dibaca di status bar.
+    // Izin lokasi dibutuhkan Android agar nama Wi-Fi (SSID) bisa dibaca di status bar dan panel Nexus-Net.
     private val ssidPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
 
@@ -217,6 +171,7 @@ class MainActivity : AppCompatActivity(), PageActions {
         apps = AppRepository(this) { releaseKiosk() }
         weather = WeatherRepository()
         monitor = SystemMonitor(this)
+        wifiScanner = WifiLiveScanner(this)
         shell = ShellEngine(
             context = this,
             registry = CommandRegistry(),
@@ -227,7 +182,7 @@ class MainActivity : AppCompatActivity(), PageActions {
         shell.nexusNet.onNeedLocationPermission = { runOnUiThread { requestLabPermissions() } }
 
         setupPager()
-        setupTerminal()
+        setupTerminalBus()
         setupMic()
         setupBackHandler()
         askLocationForSsidOnce()
@@ -236,29 +191,20 @@ class MainActivity : AppCompatActivity(), PageActions {
         startMetricsLoop()
         startWeatherLoop()
         startMediaCollector()
+        startWifiLoop()
     }
 
     override fun onResume() {
         super.onResume()
         MediaRepository.refresh(this)
         refreshMicIcon()
-        syncLightSensor()
         promptDefaultLauncherIfNeeded()
-    }
-
-    override fun onPause() {
-        sensorManager.unregisterListener(lightListener)
-        super.onPause()
     }
 
     override fun onDestroy() {
         NexusBus.terminalPrinter = null
         NexusBus.terminalClearer = null
         NexusBus.micToggle = null
-        NexusBus.matrixStart = null
-        NexusBus.matrixStop = null
-        binding.matrixRain.stopMatrixRain()
-        widgetSheet?.dismiss()
         monitor.close()
         try {
             unregisterReceiver(voiceReceiver)
@@ -294,21 +240,20 @@ class MainActivity : AppCompatActivity(), PageActions {
         if (!ok) toast("Pengaturan launcher tidak bisa dibuka")
     }
 
-    // ---------- Pager ----------
+    // ---------- Pager (2 halaman: Dashboard, Terminal) ----------
 
     private fun setupPager() {
         pagerAdapter = NexusPagerAdapter(this)
         binding.viewPager.adapter = pagerAdapter
-        binding.viewPager.offscreenPageLimit = 3
+        // Dengan 2 halaman, limit 1 menjaga kedua halaman tetap hidup (terminal tidak dibuat ulang).
+        binding.viewPager.offscreenPageLimit = 1
         buildPageIndicator(pagerAdapter.itemCount)
         binding.viewPager.registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
             override fun onPageSelected(position: Int) {
                 updateIndicator(position)
+                if (position != NexusPagerAdapter.PAGE_TERMINAL) hideKeyboard()
             }
         })
-
-        widgets = loadWidgets()
-        pagerAdapter.setWidgets(widgets)
     }
 
     private fun buildPageIndicator(count: Int) {
@@ -334,89 +279,32 @@ class MainActivity : AppCompatActivity(), PageActions {
         }
     }
 
-    // ---------- Kustomisasi widget Quick Launch ----------
+    // ---------- Terminal (Halaman 2) ----------
 
-    private fun loadWidgets(): Set<String> =
-        prefs.getStringSet(KEY_WIDGETS, null)?.toSet() ?: QuickWidgets.default
-
-    /** Dipicu HANYA oleh long press 5000 ms (NexusUi.attachLongPress di adapter). */
-    override fun onQuickLaunchLongPress() {
-        if (widgetSheet?.isShowing == true) return
-        // Semua widget yang dikenal (QuickWidgets.all), bukan hanya yang sedang aktif.
-        val candidates = QuickWidgets.all.keys.toList()
-        val pressed = NexusUi.pressedWidget
-        NexusUi.pressedWidget = null
-
-        widgetSheet = QuickWidgetEditorSheet(
-            context = this,
-            candidates = candidates,
-            active = widgets,
-            sizes = QuickWidgetStore.sizes(this),
-            initialId = pressed,
-            onSave = { id, size ->
-                QuickWidgetStore.saveSize(this, id, size)
-                applyWidgets(widgets + id)
-            },
-            onDelete = { id ->
-                QuickWidgetStore.removeSize(this, id)
-                applyWidgets(widgets - id)
-            }
-        ).also { it.show() }
-    }
-
-    /**
-     * Simpan set widget ke SharedPreferences lalu render ulang Halaman 2.
-     * reloadWidgets() WAJIB: set bisa sama persis (hanya ukuran yang berubah), sehingga
-     * perbandingan set saja tidak akan memicu pembangunan ulang widget.
-     */
-    private fun applyWidgets(newSet: Set<String>) {
-        widgets = newSet
-        prefs.edit().putStringSet(KEY_WIDGETS, HashSet(widgets)).apply()
-        pagerAdapter.setWidgets(widgets)
-        pagerAdapter.reloadWidgets()
-        syncLightSensor()
-    }
-
-    private fun syncLightSensor() {
-        sensorManager.unregisterListener(lightListener)
-        if ("light_sensor" !in widgets) return
-        val sensor = sensorManager.getDefaultSensor(Sensor.TYPE_LIGHT)
-        if (sensor == null) {
-            pagerAdapter.setLightLux(null)
-        } else {
-            sensorManager.registerListener(lightListener, sensor, SensorManager.SENSOR_DELAY_NORMAL)
-        }
-    }
-
-    // ---------- Terminal ----------
-
-    private fun setupTerminal() {
-        binding.terminalRecycler.layoutManager = LinearLayoutManager(this)
-        binding.terminalRecycler.adapter = terminalAdapter
-        binding.terminalRecycler.itemAnimator = null
-        terminalInputType = binding.terminalInput.inputType
-
+    private fun setupTerminalBus() {
         NexusBus.terminalPrinter = { text -> runOnUiThread { appendText(text) } }
         NexusBus.terminalClearer = { runOnUiThread { terminalAdapter.clear() } }
-        NexusBus.matrixStart = {
-            runOnUiThread {
-                openTerminal(showKeyboard = false)
-                binding.matrixRain.startMatrixRain()
-            }
-        }
-        NexusBus.matrixStop = { runOnUiThread { binding.matrixRain.stopMatrixRain() } }
 
-        appendLines(
-            listOf(
-                TerminalLine("NEXUS-CLI v2.0 — ketik 'help' untuk daftar perintah.", LineType.SYSTEM)
-            )
+        terminalAdapter.add(
+            listOf(TerminalLine("NEXUS-CLI v2.0 — ketik 'help' untuk daftar perintah.", LineType.SYSTEM))
         )
-        binding.terminalPrompt.text = fs.prompt()
 
         binding.btnOpenTerminal.setOnClickListener { openTerminal(showKeyboard = true) }
-        binding.btnCloseTerminal.setOnClickListener { closeTerminal() }
+    }
 
-        binding.terminalInput.setOnEditorActionListener { _, actionId, event ->
+    /** Dipanggil adapter setiap kali halaman terminal dibuat (idempotent). */
+    override fun onTerminalReady(views: TerminalViews) {
+        terminalViews = views
+        if (!terminalInputTypeCaptured) {
+            terminalInputType = views.input.inputType
+            terminalInputTypeCaptured = true
+        }
+        views.recycler.layoutManager = LinearLayoutManager(this)
+        views.recycler.adapter = terminalAdapter
+        views.recycler.itemAnimator = null
+        views.prompt.text = fs.prompt()
+
+        views.input.setOnEditorActionListener { _, actionId, event ->
             val isEnter = event != null &&
                     event.keyCode == KeyEvent.KEYCODE_ENTER &&
                     event.action == KeyEvent.ACTION_DOWN
@@ -430,36 +318,48 @@ class MainActivity : AppCompatActivity(), PageActions {
                 false
             }
         }
+        applyInputMode()
+        if (terminalAdapter.itemCount > 0) views.recycler.scrollToPosition(terminalAdapter.itemCount - 1)
     }
 
+    override fun onTerminalClose() = closeTerminal()
+
     private fun openTerminal(showKeyboard: Boolean) {
-        binding.terminalPanel.visibility = View.VISIBLE
+        binding.viewPager.setCurrentItem(NexusPagerAdapter.PAGE_TERMINAL, true)
         if (showKeyboard) {
-            binding.terminalInput.requestFocus()
-            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-            imm.showSoftInput(binding.terminalInput, InputMethodManager.SHOW_IMPLICIT)
+            binding.viewPager.post {
+                val input = terminalViews?.input ?: return@post
+                input.requestFocus()
+                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                imm.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
+            }
         }
     }
 
     private fun closeTerminal() {
-        binding.matrixRain.stopMatrixRain()
+        hideKeyboard()
+        terminalViews?.input?.clearFocus()
+        binding.viewPager.setCurrentItem(NexusPagerAdapter.PAGE_DASHBOARD, true)
+    }
+
+    private fun hideKeyboard() {
+        val token = terminalViews?.input?.windowToken ?: binding.root.windowToken ?: return
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-        imm.hideSoftInputFromWindow(binding.terminalInput.windowToken, 0)
-        binding.terminalInput.clearFocus()
-        binding.terminalPanel.visibility = View.GONE
+        imm.hideSoftInputFromWindow(token, 0)
     }
 
     private fun submitInput() {
-        val raw = binding.terminalInput.text.toString()
+        val input = terminalViews?.input ?: return
+        val raw = input.text.toString()
         val secret = shell.isAwaitingSecret
-        binding.terminalInput.setText("")
+        input.setText("")
         // Password tidak di-trim (spasi bisa bagian dari password).
         val text = if (secret) raw else raw.trim()
         if (text.isEmpty()) return
         runCommand(text, secret)
     }
 
-    /** Dipakai input terminal dan perintah suara (non-media). */
+    /** Dipakai input terminal, perintah suara (non-media), dan pilihan jaringan di Nexus-Net Panel. */
     private fun runCommand(line: String, secret: Boolean = false) {
         // Password tidak pernah ditampilkan di terminal.
         val echo = if (secret) "********" else line
@@ -472,7 +372,7 @@ class MainActivity : AppCompatActivity(), PageActions {
             }
             if (result.clear) terminalAdapter.clear()
             appendLines(result.lines)
-            binding.terminalPrompt.text = fs.prompt()
+            terminalViews?.prompt?.text = fs.prompt()
             applyInputMode()
             if (result.exit) exitNexus()
         }
@@ -480,7 +380,8 @@ class MainActivity : AppCompatActivity(), PageActions {
 
     /** Saat menunggu password Wi-Fi, field input disamarkan. */
     private fun applyInputMode() {
-        binding.terminalInput.inputType = if (shell.isAwaitingSecret) {
+        val input = terminalViews?.input ?: return
+        input.inputType = if (shell.isAwaitingSecret) {
             InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         } else {
             terminalInputType
@@ -490,8 +391,7 @@ class MainActivity : AppCompatActivity(), PageActions {
     private fun appendLines(lines: List<TerminalLine>) {
         if (lines.isEmpty()) return
         terminalAdapter.add(lines)
-        binding.terminalRecycler.scrollToPosition(terminalAdapter.itemCount - 1)
-        pagerAdapter.setLastTerminalLine(lines.last().text)
+        terminalViews?.recycler?.scrollToPosition(terminalAdapter.itemCount - 1)
     }
 
     private fun appendText(text: String, type: LineType = LineType.OUTPUT) {
@@ -501,10 +401,7 @@ class MainActivity : AppCompatActivity(), PageActions {
     private fun setupBackHandler() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                when {
-                    binding.terminalPanel.visibility == View.VISIBLE -> closeTerminal()
-                    binding.viewPager.currentItem != 0 -> binding.viewPager.currentItem = 0
-                }
+                if (binding.viewPager.currentItem != NexusPagerAdapter.PAGE_DASHBOARD) closeTerminal()
             }
         })
     }
@@ -520,6 +417,26 @@ class MainActivity : AppCompatActivity(), PageActions {
             perms.add(Manifest.permission.POST_NOTIFICATIONS)
         }
         labPermissionLauncher.launch(perms.toTypedArray())
+    }
+
+    /**
+     * Jaringan diketuk di Nexus-Net Panel: HANYA memilih target lalu memulai `nexus-net connect`.
+     * Jaringan terbuka langsung tersambung; jaringan berpassword meminta password yang DIKETIK MANUAL
+     * di terminal (tidak disimpan, tidak ada tebak-tebakan password).
+     */
+    override fun onWifiSelected(target: WifiTarget) {
+        if (shell.isAwaitingSecret) {
+            openTerminal(showKeyboard = true)
+            appendText(
+                "[nexus-net] masih menunggu password jaringan sebelumnya. Ketik password atau 'cancel'.",
+                LineType.SYSTEM
+            )
+            return
+        }
+        NexusNetPresenter.selectTarget(target)
+        openTerminal(showKeyboard = true)
+        appendText("[nexus-net] target dipilih: ${NexusNetPresenter.label(target)}", LineType.SYSTEM)
+        runCommand("nexus-net connect")
     }
 
     // ---------- Kiosk (hanya dilepas, tidak lagi dipaksa saat start) ----------
@@ -541,7 +458,7 @@ class MainActivity : AppCompatActivity(), PageActions {
         finishAffinity()
     }
 
-    // ---------- Status bar loops ----------
+    // ---------- Loops ----------
 
     private fun startClockLoop() {
         lifecycleScope.launch {
@@ -555,12 +472,12 @@ class MainActivity : AppCompatActivity(), PageActions {
         }
     }
 
+    /** Status bar atas: baterai + jaringan (Wi-Fi SSID / CELL / OFFLINE lewat ConnectivityManager di SystemMonitor). */
     private fun startMetricsLoop() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 while (true) {
                     val snap = withContext(Dispatchers.Default) { monitor.sample() }
-                    pagerAdapter.pushMetrics(snap)
 
                     binding.statusNetwork.text = "NET ${snap.netLabel}"
                     binding.statusBattery.text = if (snap.batteryPct >= 0) {
@@ -602,49 +519,27 @@ class MainActivity : AppCompatActivity(), PageActions {
         }
     }
 
-    // ---------- PageActions ----------
-
-    override fun onTileClick(tile: QuickTile) {
-        when (tile.id) {
-            "terminal" -> openTerminal(showKeyboard = true)
-            "vscode" -> launchApp("VS Code", "com.microsoft.vscode", fallbackUrl = "https://vscode.dev")
-            "browser" -> launchApp(
-                "Browser", "com.android.chrome", "org.mozilla.firefox", "com.brave.browser",
-                "com.sec.android.app.sbrowser", fallbackUrl = "https://www.google.com"
-            )
-            "files" -> launchApp(
-                "Files", "com.google.android.apps.nbu.files", "com.sec.android.app.myfiles",
-                "com.android.documentsui", "com.mi.android.globalFileexplorer"
-            )
-            "spotify" -> launchApp("Spotify", "com.spotify.music")
-            "discord" -> launchApp("Discord", "com.discord")
-            "ytmusic" -> launchApp("YT Music", "com.google.android.apps.youtube.music")
-            "camera" -> {
-                val ok = apps.launchFirstInstalled(
-                    "com.google.android.GoogleCamera", "com.sec.android.app.camera",
-                    "com.android.camera2", "com.android.camera"
-                ) || apps.start(Intent(MediaStore.ACTION_IMAGE_CAPTURE))
-                if (!ok) toast("Camera tidak ditemukan")
+    /**
+     * Coroutine timer Nexus-Net Panel: baca daftar Wi-Fi tiap [WIFI_REFRESH_MS] (1 detik).
+     * Hanya berjalan saat Dashboard terlihat. Hanya SCAN/daftar, tanpa uji password.
+     */
+    private fun startWifiLoop() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (isActive) {
+                    val startedAt = SystemClock.elapsedRealtime()
+                    if (binding.viewPager.currentItem == NexusPagerAdapter.PAGE_DASHBOARD) {
+                        val snap = withContext(Dispatchers.Default) { wifiScanner.poll() }
+                        pagerAdapter.setWifi(snap)
+                    }
+                    val spent = SystemClock.elapsedRealtime() - startedAt
+                    delay((WIFI_REFRESH_MS - spent).coerceAtLeast(100L))
+                }
             }
-            "calc" -> launchApp(
-                "Calculator", "com.google.android.calculator", "com.sec.android.app.popupcalculator",
-                "com.android.calculator2"
-            )
-            "clock" -> launchApp(
-                "Clock", "com.google.android.deskclock", "com.sec.android.app.clockpackage",
-                "com.android.deskclock"
-            )
-            "mute" -> {
-                val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                audio.adjustStreamVolume(
-                    AudioManager.STREAM_MUSIC,
-                    AudioManager.ADJUST_TOGGLE_MUTE,
-                    AudioManager.FLAG_SHOW_UI
-                )
-            }
-            "settings" -> if (!apps.start(Intent(Settings.ACTION_SETTINGS))) toast("Settings tidak bisa dibuka")
         }
     }
+
+    // ---------- PageActions (media) ----------
 
     override fun onMediaPrev() = MediaRepository.previous()
 
@@ -744,9 +639,10 @@ class MainActivity : AppCompatActivity(), PageActions {
     }
 
     private companion object {
-        const val KEY_WIDGETS = "quick_widgets"
-        const val QUICK_LAUNCH_PAGE = 1
         const val KEY_ASKED_LOCATION = "asked_location_ssid"
+
+        /** Interval refresh Nexus-Net Panel (ms). */
+        const val WIFI_REFRESH_MS = 1_000L
     }
 }
 
@@ -757,11 +653,6 @@ class MainActivity : AppCompatActivity(), PageActions {
 object NexusUi {
 
     const val PROGRESS_MAX = 10_000
-    const val QUICK_LONG_PRESS_MS = 5_000L
-
-    /** Widget yang sedang ditekan (diisi adapter saat ACTION_DOWN, dibaca MainActivity). */
-    @Volatile
-    var pressedWidget: String? = null
 
     private val progressAnims = WeakHashMap<View, ObjectAnimator>()
 
@@ -822,411 +713,5 @@ object NexusUi {
 
     fun cancelProgress(bar: ProgressBar) {
         progressAnims.remove(bar)?.cancel()
-    }
-
-    /**
-     * Pemicu HANYA bila ditahan [holdMs] tanpa bergeser. Geser > slop atau ACTION_CANCEL
-     * (mis. swipe ViewPager2) membatalkan timer. Setelah terpicu, UP dikonsumsi agar widget
-     * tidak ikut ter-klik. [onDown] dipanggil saat jari menyentuh.
-     */
-    @SuppressLint("ClickableViewAccessibility")
-    fun attachLongPress(
-        target: View,
-        holdMs: Long = QUICK_LONG_PRESS_MS,
-        onDown: () -> Unit = {},
-        onTrigger: () -> Unit
-    ) {
-        val slop = ViewConfiguration.get(target.context).scaledTouchSlop * 1.5f
-        var downX = 0f
-        var downY = 0f
-        var fired = false
-        val trigger = Runnable {
-            fired = true
-            target.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-            onTrigger()
-        }
-        target.setOnTouchListener { _, e ->
-            when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    fired = false
-                    downX = e.rawX
-                    downY = e.rawY
-                    onDown()
-                    target.removeCallbacks(trigger)
-                    target.postDelayed(trigger, holdMs)
-                }
-                MotionEvent.ACTION_MOVE ->
-                    if (hypot(e.rawX - downX, e.rawY - downY) > slop) target.removeCallbacks(trigger)
-                MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
-                    target.removeCallbacks(trigger)
-            }
-            fired && (e.actionMasked == MotionEvent.ACTION_UP || e.actionMasked == MotionEvent.ACTION_CANCEL)
-        }
-        target.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
-            override fun onViewAttachedToWindow(v: View) = Unit
-            override fun onViewDetachedFromWindow(v: View) {
-                v.removeCallbacks(trigger)
-            }
-        })
-    }
-}
-
-// ============================================================================
-// Ukuran widget Quick Launch (tersimpan di SharedPreferences yang sama dengan set widget)
-// ============================================================================
-
-enum class WidgetBoxSize(val key: String, val cols: Int, val rows: Int) {
-    S1X1("1x1", 1, 1),
-    S2X1("2x1", 2, 1),
-    S1X2("1x2", 1, 2),
-    S2X2("2x2", 2, 2),
-    S4X1("4x1", 4, 1);
-
-    companion object {
-        fun fromKey(key: String?): WidgetBoxSize? = entries.firstOrNull { it.key == key }
-    }
-}
-
-object QuickWidgetStore {
-    private const val KEY_SIZES = "quick_widget_sizes"
-
-    private fun prefs(context: Context) =
-        context.getSharedPreferences(VoiceForegroundService.PREFS_NAME, Context.MODE_PRIVATE)
-
-    fun sizes(context: Context): Map<String, WidgetBoxSize> {
-        val raw = prefs(context).getString(KEY_SIZES, null) ?: return emptyMap()
-        return try {
-            val obj = JSONObject(raw)
-            obj.keys().asSequence()
-                .mapNotNull { id -> WidgetBoxSize.fromKey(obj.optString(id))?.let { id to it } }
-                .toMap()
-        } catch (e: Exception) {
-            emptyMap()
-        }
-    }
-
-    fun sizeOf(context: Context, id: String): WidgetBoxSize =
-        sizes(context)[id] ?: WidgetBoxSize.S1X1
-
-    fun saveSize(context: Context, id: String, size: WidgetBoxSize) {
-        persist(context, sizes(context).toMutableMap().apply { put(id, size) })
-    }
-
-    fun removeSize(context: Context, id: String) {
-        persist(context, sizes(context).toMutableMap().apply { remove(id) })
-    }
-
-    private fun persist(context: Context, map: Map<String, WidgetBoxSize>) {
-        val obj = JSONObject()
-        map.forEach { (id, size) -> obj.put(id, size.key) }
-        prefs(context).edit().putString(KEY_SIZES, obj.toString()).apply()
-    }
-}
-
-// ============================================================================
-// BottomSheet kustomisasi widget (glassmorphism, ikon berwarna, preview, ukuran, hapus)
-// ============================================================================
-
-class QuickWidgetEditorSheet(
-    private val context: Context,
-    private val candidates: List<String>,
-    private val active: Set<String>,
-    sizes: Map<String, WidgetBoxSize>,
-    initialId: String? = null,
-    private val onSave: (String, WidgetBoxSize) -> Unit,
-    private val onDelete: (String) -> Unit
-) {
-
-    private val work = HashMap<String, WidgetBoxSize>(sizes)
-    private var selId: String = initialId?.takeIf { it in candidates }
-        ?: candidates.firstOrNull { it in active }
-        ?: candidates.first()
-    private var dialog: BottomSheetDialog? = null
-
-    val isShowing: Boolean get() = dialog?.isShowing == true
-
-    fun dismiss() {
-        dialog?.dismiss()
-    }
-
-    fun show() {
-        val neon = Color.parseColor("#00FF66")
-
-        val cardRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-        val sizeRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-        val previewHost = FrameLayout(context).apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(100))
-        }
-        val btnSave = actionButton("Simpan", neon, Color.BLACK, neon)
-        val btnDelete = actionButton(
-            "Hapus Widget", 0x00000000, Color.parseColor("#FF5555"), Color.parseColor("#FF5555")
-        )
-        val btnCancel = actionButton("Batal", 0x00000000, Color.parseColor("#B0B0BA"), 0x33FFFFFF)
-
-        fun render() {
-            cardRow.removeAllViews()
-            candidates.forEachIndexed { index, id ->
-                cardRow.addView(widgetCard(id, index, id == selId, id in active) {
-                    selId = id
-                    render()
-                })
-            }
-            val current = work[selId] ?: WidgetBoxSize.S1X1
-            sizeRow.removeAllViews()
-            WidgetBoxSize.entries.forEach { s ->
-                sizeRow.addView(sizeChip(s, s == current) {
-                    work[selId] = s
-                    render()
-                })
-            }
-            previewHost.removeAllViews()
-            previewHost.addView(buildPreview(selId, candidates.indexOf(selId), current))
-            btnDelete.alpha = if (selId in active) 1f else 0.4f
-        }
-
-        val dlg = BottomSheetDialog(context)
-        dialog = dlg
-
-        btnSave.setOnClickListener {
-            onSave(selId, work[selId] ?: WidgetBoxSize.S1X1)
-            dlg.dismiss()
-            Toast.makeText(context, "Widget disimpan: ${labelOf(selId)}", Toast.LENGTH_SHORT).show()
-        }
-        btnDelete.setOnClickListener {
-            if (selId in active) {
-                onDelete(selId)
-                dlg.dismiss()
-                Toast.makeText(context, "Widget dihapus: ${labelOf(selId)}", Toast.LENGTH_SHORT).show()
-            }
-        }
-        btnCancel.setOnClickListener { dlg.dismiss() }
-
-        val left = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.4f)
-            addView(sectionLabel("Pilih widget"))
-            addView(HorizontalScrollView(context).apply {
-                isHorizontalScrollBarEnabled = false
-                addView(cardRow)
-            })
-            addView(sectionLabel("Ukuran"))
-            addView(HorizontalScrollView(context).apply {
-                isHorizontalScrollBarEnabled = false
-                addView(sizeRow)
-            })
-        }
-
-        val right = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = dp(20)
-            }
-            addView(sectionLabel("Preview"))
-            addView(previewHost)
-            addView(btnSave)
-            addView(btnDelete)
-            addView(btnCancel)
-        }
-
-        val root = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(16), dp(20), dp(20))
-            background = glassSheetBackground()
-            addView(TextView(context).apply {
-                text = "Kustomisasi Quick Launch"
-                setTextColor(neon)
-                textSize = 16f
-                typeface = Typeface.MONOSPACE
-                setTypeface(typeface, Typeface.BOLD)
-            })
-            addView(LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                setPadding(0, dp(8), 0, 0)
-                addView(left)
-                addView(right)
-            })
-        }
-
-        render()
-        dlg.setContentView(ScrollView(context).apply { addView(root) })
-        dlg.setOnShowListener {
-            dlg.findViewById<FrameLayout>(com.google.android.material.R.id.design_bottom_sheet)
-                ?.setBackgroundColor(Color.TRANSPARENT)
-            dlg.behavior.state = BottomSheetBehavior.STATE_EXPANDED
-            dlg.behavior.skipCollapsed = true
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            dlg.window?.let { w ->
-                w.addFlags(WindowManager.LayoutParams.FLAG_BLUR_BEHIND)
-                w.attributes = w.attributes.apply { blurBehindRadius = 32 }
-            }
-        }
-        dlg.show()
-    }
-
-    // ---------- helper UI ----------
-
-    private fun dp(v: Int): Int = (v * context.resources.displayMetrics.density + 0.5f).toInt()
-
-    private fun labelOf(id: String): String =
-        QuickWidgets.all[id]
-            ?: id.split('_').joinToString(" ") { part -> part.replaceFirstChar { it.uppercase() } }
-
-    private fun emojiOf(id: String): String = when {
-        "light" in id -> "💡"
-        "clock" in id || "time" in id -> "🕒"
-        "cal" in id -> "📅"
-        "weather" in id -> "☁️"
-        "media" in id || "music" in id -> "🎵"
-        "cpu" in id || "chart" in id -> "📈"
-        "ram" in id || "mem" in id -> "🧠"
-        "batt" in id -> "🔋"
-        "net" in id -> "📡"
-        "term" in id -> "💻"
-        else -> "🧩"
-    }
-
-    private fun colorOf(index: Int): Int =
-        Color.parseColor(PALETTE[index.coerceAtLeast(0) % PALETTE.size])
-
-    private fun roundedBg(fill: Int, stroke: Int, strokeDp: Int = 1, radiusDp: Int = 14) =
-        GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = dp(radiusDp).toFloat()
-            setColor(fill)
-            setStroke(dp(strokeDp), stroke)
-        }
-
-    // TODO: pindahkan ke drawable bg_glass_card.xml
-    private fun glassSheetBackground(): GradientDrawable {
-        val r = dp(24).toFloat()
-        return GradientDrawable(
-            GradientDrawable.Orientation.TL_BR,
-            intArrayOf(Color.parseColor("#B31E1E26"), Color.parseColor("#CC0A0A0C"))
-        ).apply {
-            cornerRadii = floatArrayOf(r, r, r, r, 0f, 0f, 0f, 0f)
-            setStroke(dp(1), Color.parseColor("#3300FF66"))
-        }
-    }
-
-    private fun sectionLabel(text: String) = TextView(context).apply {
-        this.text = text
-        setTextColor(Color.parseColor("#8A8A94"))
-        textSize = 11f
-        setPadding(0, dp(12), 0, dp(6))
-    }
-
-    private fun widgetCard(
-        id: String,
-        index: Int,
-        selected: Boolean,
-        isActive: Boolean,
-        onClick: () -> Unit
-    ): View {
-        val c = colorOf(index)
-        return LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            alpha = if (isActive) 1f else 0.55f
-            layoutParams = LinearLayout.LayoutParams(dp(88), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                marginEnd = dp(8)
-            }
-            setPadding(dp(6), dp(8), dp(6), dp(8))
-            background = roundedBg(
-                if (selected) ColorUtils.setAlphaComponent(c, 60) else 0x14FFFFFF,
-                if (selected) c else 0x22FFFFFF,
-                if (selected) 2 else 1
-            )
-            addView(TextView(context).apply {
-                text = emojiOf(id)
-                textSize = 22f
-                gravity = Gravity.CENTER
-                layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
-                background = roundedBg(ColorUtils.setAlphaComponent(c, 70), c, 1, 12)
-            })
-            addView(TextView(context).apply {
-                text = labelOf(id)
-                textSize = 10f
-                gravity = Gravity.CENTER
-                maxLines = 2
-                setTextColor(Color.WHITE)
-                setPadding(0, dp(4), 0, 0)
-            })
-            addView(TextView(context).apply {
-                text = if (isActive) "aktif" else "nonaktif"
-                textSize = 9f
-                gravity = Gravity.CENTER
-                setTextColor(if (isActive) Color.parseColor("#00FF66") else Color.parseColor("#8A8A94"))
-            })
-            setOnClickListener { onClick() }
-        }
-    }
-
-    private fun sizeChip(s: WidgetBoxSize, selected: Boolean, onClick: () -> Unit): View {
-        val neon = Color.parseColor("#00FF66")
-        return TextView(context).apply {
-            text = s.key
-            textSize = 13f
-            typeface = Typeface.MONOSPACE
-            gravity = Gravity.CENTER
-            setTextColor(if (selected) Color.BLACK else Color.WHITE)
-            setPadding(dp(14), dp(8), dp(14), dp(8))
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { marginEnd = dp(8) }
-            background = roundedBg(
-                if (selected) neon else 0x14FFFFFF,
-                if (selected) neon else 0x33FFFFFF,
-                1, 10
-            )
-            setOnClickListener { onClick() }
-        }
-    }
-
-    private fun buildPreview(id: String, index: Int, s: WidgetBoxSize): View {
-        val c = colorOf(index)
-        val unit = dp(40)
-        val gap = dp(6)
-        val w = s.cols * unit + (s.cols - 1) * gap
-        val h = s.rows * unit + (s.rows - 1) * gap
-        return LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            layoutParams = FrameLayout.LayoutParams(w, h, Gravity.CENTER)
-            background = roundedBg(ColorUtils.setAlphaComponent(c, 50), c, 1, 14)
-            addView(TextView(context).apply {
-                text = emojiOf(id)
-                textSize = if (s == WidgetBoxSize.S1X1) 18f else 26f
-                gravity = Gravity.CENTER
-            })
-            if (s != WidgetBoxSize.S1X1) {
-                addView(TextView(context).apply {
-                    text = labelOf(id)
-                    textSize = 11f
-                    setTextColor(Color.WHITE)
-                    gravity = Gravity.CENTER
-                })
-            }
-        }
-    }
-
-    private fun actionButton(label: String, fill: Int, textColor: Int, stroke: Int) =
-        TextView(context).apply {
-            text = label
-            textSize = 13f
-            gravity = Gravity.CENTER
-            setTextColor(textColor)
-            typeface = Typeface.DEFAULT_BOLD
-            isClickable = true
-            isFocusable = true
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(8) }
-            background = roundedBg(fill, stroke, 1, 12)
-        }
-
-    private companion object {
-        val PALETTE = listOf("#00FF66", "#4DA3FF", "#FF5DA2", "#FFB84D", "#B388FF", "#7FD8FF", "#FFE66D")
     }
 }

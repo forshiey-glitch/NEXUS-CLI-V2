@@ -1,6 +1,11 @@
 package com.nexus.cli
 
 import android.graphics.Bitmap
+import android.widget.EditText
+import android.widget.TextView
+import androidx.recyclerview.widget.RecyclerView
+import com.nexus.cli.nexusnet.WifiSnapshot
+import com.nexus.cli.nexusnet.WifiTarget
 
 enum class LineType { INPUT, OUTPUT, ERROR, SYSTEM }
 
@@ -24,44 +29,6 @@ data class ShellResult(
         fun error(text: String): ShellResult =
             ShellResult(listOf(TerminalLine(text, LineType.ERROR)))
     }
-}
-
-data class QuickTile(
-    val id: String,
-    val glyph: String,
-    val label: String
-)
-
-object QuickTiles {
-    val all: List<QuickTile> = listOf(
-        QuickTile("terminal", ">_", "Terminal"),
-        QuickTile("vscode", "{}", "VS Code"),
-        QuickTile("browser", "www", "Browser"),
-        QuickTile("files", "DIR", "Files"),
-        QuickTile("spotify", "SPT", "Spotify"),
-        QuickTile("discord", "DSC", "Discord"),
-        QuickTile("ytmusic", "YTM", "YT Music"),
-        QuickTile("camera", "CAM", "Camera"),
-        QuickTile("calc", "123", "Calculator"),
-        QuickTile("clock", "CLK", "Clock"),
-        QuickTile("mute", "MUT", "Mute"),
-        QuickTile("settings", "SET", "Settings")
-    )
-}
-
-/** Widget yang bisa dipasang di halaman Quick Launch (urutan = urutan tampil). */
-object QuickWidgets {
-    val all: LinkedHashMap<String, String> = linkedMapOf(
-        "clock_big" to "Jam Besar",
-        "calendar" to "Kalender",
-        "weather" to "Cuaca",
-        "music_player" to "Pemutar Musik",
-        "cpu_chart" to "Grafik CPU",
-        "terminal_mini" to "Terminal Mini",
-        "light_sensor" to "Sensor Cahaya"
-    )
-
-    val default: Set<String> = setOf("clock_big", "music_player")
 }
 
 data class MediaState(
@@ -111,21 +78,29 @@ data class UiState(
     val media: MediaState = MediaState(),
     val weather: WeatherInfo? = null,
     val weatherError: String? = null,
-    val metrics: MetricsSnapshot? = null,
     val nowMillis: Long = System.currentTimeMillis(),
     val sessionRunning: Boolean = false,
     val sessionElapsedMs: Long = 0L,
     val sessionTotalTodayMs: Long = 0L,
-    val widgets: Set<String> = QuickWidgets.default,
-    val lightLux: Float? = null,
-    val lastTerminalLine: String = ""
+    val wifi: WifiSnapshot = WifiSnapshot()
+)
+
+/** View-view terminal di Halaman 2; diserahkan adapter ke MainActivity saat halaman dibuat. */
+class TerminalViews(
+    val recycler: RecyclerView,
+    val prompt: TextView,
+    val input: EditText
 )
 
 interface PageActions {
-    fun onTileClick(tile: QuickTile)
     fun onMediaPrev()
     fun onMediaPlayPause()
     fun onMediaNext()
     fun onMediaCardClick()
-    fun onQuickLaunchLongPress()
+
+    /** Jaringan di Nexus-Net Panel diketuk (hanya memilih target; password diketik manual di terminal). */
+    fun onWifiSelected(target: WifiTarget)
+
+    fun onTerminalReady(views: TerminalViews)
+    fun onTerminalClose()
 }

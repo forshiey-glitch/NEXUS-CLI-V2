@@ -21,7 +21,7 @@ data class LabUiState(
     val lastScanAt: Long = 0L
 )
 
-/** Format output terminal + StateFlow untuk WifiLabCard (Halaman 4). */
+/** Format output terminal + StateFlow status lab (target terpilih, status koneksi). */
 object NexusNetPresenter {
 
     private val _state = MutableStateFlow(LabUiState())
@@ -52,6 +52,10 @@ object NexusNetPresenter {
         _state.update { it.copy(selected = t) }
         return t
     }
+
+    /** Pilih target langsung dari Nexus-Net Panel (bukan lewat nomor tabel `nexus-net select`). */
+    fun selectTarget(target: WifiTarget) =
+        _state.update { it.copy(selected = target) }
 
     fun setConnectStatus(text: String) =
         _state.update { it.copy(connectStatus = text) }

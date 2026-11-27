@@ -1,0 +1,14 @@
+<com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android" style="@style/Widget.Nexus.GlassCard" android:layout_width="match_parent" android:layout_height="match_parent">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@color/nexus_green_header" android:gravity="center_vertical" android:orientation="horizontal" android:paddingHorizontal="14dp" android:paddingVertical="9dp">
+            <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:fontFamily="monospace" android:letterSpacing="0.1" android:text="NEXUS-NET // WI-FI" android:textColor="@color/nexus_green" android:textSize="12sp" android:textStyle="bold"/>
+            <TextView android:id="@+id/wifiLive" android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="monospace" android:text="● LIVE 1s" android:textColor="@color/nexus_green" android:textSize="10sp"/>
+        </LinearLayout>
+        <TextView android:id="@+id/wifiStatus" android:layout_width="match_parent" android:layout_height="wrap_content" android:ellipsize="end" android:fontFamily="monospace" android:maxLines="1" android:paddingHorizontal="14dp" android:paddingTop="6dp" android:paddingBottom="4dp" android:text="Memindai…" android:textColor="@color/text_secondary" android:textSize="10sp"/>
+        <FrameLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1">
+            <androidx.recyclerview.widget.RecyclerView android:id="@+id/wifiList" android:layout_width="match_parent" android:layout_height="match_parent" android:overScrollMode="never"/>
+            <TextView android:id="@+id/wifiEmpty" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_gravity="center" android:fontFamily="monospace" android:gravity="center" android:padding="16dp" android:text="Memindai…" android:textColor="@color/text_secondary" android:textSize="12sp"/>
+        </FrameLayout>
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:fontFamily="monospace" android:paddingHorizontal="14dp" android:paddingVertical="6dp" android:text="Ketuk jaringan → ketik password manual di Terminal" android:textColor="@color/text_secondary" android:textSize="9sp"/>
+    </LinearLayout>
+</com.google.android.material.card.MaterialCardView>

@@ -1,0 +1,7 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="wrap_content" android:foreground="?attr/selectableItemBackground" android:gravity="center_vertical" android:minHeight="44dp" android:orientation="horizontal" android:paddingHorizontal="14dp" android:paddingVertical="6dp">
+    <TextView android:id="@+id/wifiBars" android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="monospace" android:text="▂▄▆█" android:textSize="13sp"/>
+    <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="10dp" android:layout_weight="1" android:orientation="vertical">
+        <TextView android:id="@+id/wifiSsid" android:layout_width="match_parent" android:layout_height="wrap_content" android:ellipsize="end" android:maxLines="1" android:text="SSID" android:textColor="@color/text_primary" android:textSize="13sp"/>
+        <TextView android:id="@+id/wifiMeta" android:layout_width="match_parent" android:layout_height="wrap_content" android:ellipsize="end" android:fontFamily="monospace" android:maxLines="1" android:text="WPA2 · CH 1 · -50 dBm" android:textColor="@color/text_secondary" android:textSize="10sp"/>
+    </LinearLayout>
+</LinearLayout>
