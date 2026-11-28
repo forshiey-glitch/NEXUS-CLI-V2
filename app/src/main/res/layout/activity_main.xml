@@ -6,7 +6,15 @@
             <Space android:layout_width="0dp" android:layout_height="0dp" android:layout_weight="1"/>
             <TextView android:id="@+id/statusNetwork" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginEnd="10dp" android:fontFamily="monospace" android:text="NET --" android:textColor="@color/text_secondary" android:textSize="11sp"/>
             <TextView android:id="@+id/statusBattery" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginEnd="10dp" android:fontFamily="monospace" android:text="BAT --" android:textColor="@color/nexus_green" android:textSize="11sp"/>
-            <ImageButton android:id="@+id/btnMicToggle" android:layout_width="28dp" android:layout_height="28dp" android:background="?attr/selectableItemBackgroundBorderless" android:contentDescription="Mic" android:src="@drawable/ic_mic_off" app:tint="@color/nexus_green"/>
+
+            <ImageButton
+                android:id="@+id/btnMicToggle"
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Mic"
+                android:src="@drawable/ic_mic_off"
+                app:tint="@color/nexus_green" />
             <ImageButton android:id="@+id/btnOpenTerminal" android:layout_width="28dp" android:layout_height="28dp" android:layout_marginStart="10dp" android:background="?attr/selectableItemBackgroundBorderless" android:contentDescription="Terminal" android:src="@android:drawable/ic_menu_edit" app:tint="@color/nexus_green"/>
         </LinearLayout>
         <androidx.viewpager2.widget.ViewPager2 android:id="@+id/viewPager" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"/>

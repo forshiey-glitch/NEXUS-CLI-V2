@@ -32,6 +32,7 @@ import android.provider.Settings
 import android.text.InputType
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup // NEXUS-DRAWER
 import android.view.ViewOutlineProvider
 import android.view.animation.LinearInterpolator
 import android.view.inputmethod.EditorInfo
@@ -44,8 +45,14 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.DrawableRes
 import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.foundation.layout.fillMaxSize // NEXUS-DRAWER
+import androidx.compose.runtime.Composable // NEXUS-DRAWER
+import androidx.compose.ui.Modifier // NEXUS-DRAWER
+import androidx.compose.ui.platform.ComposeView // NEXUS-DRAWER
+import androidx.compose.ui.viewinterop.AndroidView // NEXUS-DRAWER
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ViewModelProvider // NEXUS-DRAWER
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -54,6 +61,8 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.imageview.ShapeableImageView
 import com.google.android.material.shape.RelativeCornerSize
 import com.nexus.cli.databinding.ActivityMainBinding
+import com.nexus.cli.nexusdrawer.NexusDrawerViewModel // NEXUS-DRAWER
+import com.nexus.cli.nexusdrawer.NexusShell // NEXUS-DRAWER
 import com.nexus.cli.nexusnet.NexusNetPresenter
 import com.nexus.cli.nexusnet.WifiLiveScanner
 import com.nexus.cli.nexusnet.WifiTarget
@@ -78,6 +87,7 @@ class MainActivity : AppCompatActivity(), PageActions {
     private lateinit var shell: ShellEngine
     private lateinit var wifiScanner: WifiLiveScanner
     private lateinit var pagerAdapter: NexusPagerAdapter
+    private lateinit var nexusVm: NexusDrawerViewModel // NEXUS-DRAWER
     private val terminalAdapter = TerminalAdapter()
 
     private val clockFmt = DateTimeFormatter.ofPattern("HH:mm")
@@ -162,7 +172,9 @@ class MainActivity : AppCompatActivity(), PageActions {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(binding.root)
+        // NEXUS-DRAWER: UI lama dibungkus NexusShell (overlay), isinya tidak diubah.
+        nexusVm = ViewModelProvider(this)[NexusDrawerViewModel::class.java]
+        setContentView(createNexusRoot())
 
         prefs = getSharedPreferences(VoiceForegroundService.PREFS_NAME, Context.MODE_PRIVATE)
         MediaRepository.attach(this)
@@ -176,7 +188,8 @@ class MainActivity : AppCompatActivity(), PageActions {
             context = this,
             registry = CommandRegistry(),
             shellContext = ShellContext(applicationContext, fs, apps, weather, monitor),
-            cpuProvider = { monitor.getCpuUsage() }
+            cpuProvider = { monitor.getCpuUsage() },
+            presence = nexusVm // NEXUS-DRAWER
         )
         // Callback dipanggil dari thread background -> wajib pindah ke main thread.
         shell.nexusNet.onNeedLocationPermission = { runOnUiThread { requestLabPermissions() } }
@@ -192,6 +205,37 @@ class MainActivity : AppCompatActivity(), PageActions {
         startWeatherLoop()
         startMediaCollector()
         startWifiLoop()
+    }
+
+    // ---------- NEXUS-DRAWER ----------
+
+    private fun createNexusRoot(): ComposeView = ComposeView(this).apply {
+        setContent {
+            NexusShell(
+                viewModel = nexusVm,
+                onMicClick = { setMic(!prefs.getBoolean(VoiceForegroundService.KEY_MIC_ENABLED, false)) },
+                onKeyboardClick = {
+                    nexusVm.close()
+                    openTerminal(showKeyboard = true)
+                },
+                onSettingsClick = {
+                    nexusVm.close()
+                    if (!apps.start(Intent(Settings.ACTION_SETTINGS))) toast("Pengaturan tidak bisa dibuka")
+                }
+            ) { ExistingContent() }
+        }
+    }
+
+    /** UI lama (status bar + ViewPager2 Dashboard/Terminal) apa adanya. */
+    @Composable
+    private fun ExistingContent() {
+        AndroidView(
+            factory = {
+                (binding.root.parent as? ViewGroup)?.removeView(binding.root)
+                binding.root
+            },
+            modifier = Modifier.fillMaxSize()
+        )
     }
 
     override fun onResume() {
@@ -401,6 +445,11 @@ class MainActivity : AppCompatActivity(), PageActions {
     private fun setupBackHandler() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                // NEXUS-DRAWER: back menutup drawer lebih dulu.
+                if (nexusVm.isOpen.value) {
+                    nexusVm.close()
+                    return
+                }
                 if (binding.viewPager.currentItem != NexusPagerAdapter.PAGE_DASHBOARD) closeTerminal()
             }
         })
@@ -593,6 +642,7 @@ class MainActivity : AppCompatActivity(), PageActions {
             startVoiceService()
         }
         refreshMicIcon()
+        nexusVm.setListening(prefs.getBoolean(VoiceForegroundService.KEY_MIC_ENABLED, false)) // NEXUS-DRAWER
     }
 
     private fun setMic(enable: Boolean) {
@@ -631,6 +681,7 @@ class MainActivity : AppCompatActivity(), PageActions {
     private fun setMicState(enabled: Boolean) {
         prefs.edit().putBoolean(VoiceForegroundService.KEY_MIC_ENABLED, enabled).apply()
         refreshMicIcon()
+        nexusVm.setListening(enabled) // NEXUS-DRAWER
     }
 
     private fun refreshMicIcon() {

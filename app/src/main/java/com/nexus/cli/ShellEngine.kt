@@ -1,6 +1,7 @@
 package com.nexus.cli
 
 import android.content.Context
+import com.nexus.cli.nexusdrawer.NexusDrawerViewModel
 import com.nexus.cli.nexusnet.NexusNetCommand
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -32,7 +33,9 @@ class ShellEngine(
     context: Context,
     private val registry: CommandRegistry,
     private val shellContext: ShellContext,
-    cpuProvider: () -> Float
+    cpuProvider: () -> Float,
+    /** Opsional: ringkasan hasil perintah dikirim ke balon dialog Nexus Drawer. Output terminal tidak berubah. */
+    private val presence: NexusDrawerViewModel? = null
 ) {
 
     private val appContext = context.applicationContext
@@ -47,6 +50,26 @@ class ShellEngine(
 
     /** Harus dipanggil dari main thread (sensor, chart, dan media memakai main thread). */
     suspend fun execute(rawLine: String): ShellResult {
+        val secret = nexusNet.isAwaitingPassword
+        // Password tidak pernah dikirim ke drawer.
+        val shown = if (secret) null else rawLine.trim().ifEmpty { null }
+        val report = secret || shown != null
+
+        if (report) presence?.onCommandStart(shown)
+        val result = try {
+            executeInternal(rawLine)
+        } catch (e: Exception) {
+            if (report) presence?.onCommandResult("shell: ${e.message ?: e.javaClass.simpleName}".toBubble(), true)
+            throw e
+        }
+        if (report) {
+            val (text, isError) = summarize(shown.orEmpty(), result, secret)
+            presence?.onCommandResult(text, isError)
+        }
+        return result
+    }
+
+    private suspend fun executeInternal(rawLine: String): ShellResult {
         // Baris password langsung ke NexusNetCommand: tanpa trim/tokenize/alias/pipe/redirect.
         if (nexusNet.isAwaitingPassword) return nexusNetSecretInput(rawLine)
 
@@ -91,6 +114,27 @@ class ShellEngine(
             }
         }
         return last
+    }
+
+    /** Ringkasan singkat untuk balon dialog. Mengembalikan (teks, isError). */
+    private fun summarize(command: String, result: ShellResult, secret: Boolean): Pair<String, Boolean> {
+        val hasError = result.lines.any { it.type == LineType.ERROR }
+        if (secret) {
+            return (if (hasError) "Gagal menyambung Wi-Fi." else "Perintah Wi-Fi sudah diproses.") to hasError
+        }
+        result.lines.firstOrNull { it.type == LineType.ERROR }?.let { return it.text.toBubble() to true }
+        if (result.exit) return "Sampai jumpa!" to false
+        val real = result.lines.filter { it.text.isNotBlank() }
+        if (real.isEmpty()) {
+            return (if (result.clear) "Terminal dibersihkan." else "Perintah \"${command.take(30)}\" dijalankan.") to false
+        }
+        val head = real.first().text.toBubble()
+        return (if (real.size > 1) "$head (+${real.size - 1} baris lagi)" else head) to false
+    }
+
+    private fun String.toBubble(max: Int = 90): String {
+        val t = trim().replace(Regex("\\s+"), " ")
+        return if (t.length > max) t.take(max - 1) + "…" else t
     }
 
     private suspend fun runSegment(segment: String, stdin: String?, allowAsync: Boolean): ShellResult {
